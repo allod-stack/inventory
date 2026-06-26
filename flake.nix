@@ -137,7 +137,7 @@
           # Development VMs require profiles unless self_rebuild is false
           for vm in $(jq -r 'keys[]' "$specs"); do
             forge_key=$(jq -r --arg v "$vm" '.[$v].forge_key' "$specs")
-            self_rebuild=$(jq -r --arg v "$vm" '.[$v].self_rebuild // true' "$specs")
+            self_rebuild=$(jq -r --arg v "$vm" 'if .[$v] | has("self_rebuild") then .[$v].self_rebuild else true end' "$specs")
             if [ "$forge_key" != "null" ] && [ "$self_rebuild" != "false" ]; then
               if ! jq -e --arg v "$vm" '.[$v].repos | index("profiles")' "$specs" >/dev/null 2>&1; then
                 echo "ERROR: development VM '$vm' is missing required 'profiles' alias"
