@@ -1,0 +1,29 @@
+{
+  "repositories": {
+    "workspace-tools": {
+      "source": "forge",
+      "remote": "allod/tools",
+      "checkout": "allod/tools"
+    },
+    "strategy": {
+      "source": "forge",
+      "remote": "Allod/strategy",
+      "checkout": "allod/strategy"
+    },
+    "allod/secrets": {
+      "source": "forge",
+      "remote": "Allod/secrets",
+      "checkout": "allod/secrets"
+    },
+    "allod/inventory": {
+      "source": "forge",
+      "remote": "Allod/inventory",
+      "checkout": "allod/inventory"
+    },
+    "allod/memory": {
+      "source": "forge",
+      "remote": "Allod/memory",
+      "checkout": "allod/memory"
+    }
+  }
+}
