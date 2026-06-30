@@ -7,22 +7,22 @@
     },
     "strategy": {
       "source": "forge",
-      "remote": "Allod/strategy",
+      "remote": "allod/strategy",
       "checkout": "allod/strategy"
     },
     "allod/secrets": {
       "source": "forge",
-      "remote": "Allod/secrets",
+      "remote": "allod/secrets",
       "checkout": "allod/secrets"
     },
     "allod/inventory": {
       "source": "forge",
-      "remote": "Allod/inventory",
+      "remote": "allod/inventory",
       "checkout": "allod/inventory"
     },
     "allod/memory": {
       "source": "forge",
-      "remote": "Allod/memory",
+      "remote": "allod/memory",
       "checkout": "allod/memory"
     }
   }
