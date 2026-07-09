@@ -22,6 +22,40 @@
           self_rebuild = false;
           repos = [ "workspace-tools" "strategy" "allod/secrets" "allod/inventory" "allod/memory" ];
         };
+
+        # Synthetic hypervisor example. `profiles` always injects a `nexus`
+        # identity, so its machine set must contain a `nexus` entry for the
+        # identity/machine assertion to hold. `vmSpecsJson` filters out
+        # `type == "hypervisor"`, so this entry does not appear in
+        # scripts/vm-specs.json and does not affect inventory's own checks.
+        nexus = {
+          platform = "x86_64-linux";
+          type = "hypervisor";
+          memory_mb = 16384;
+          vcpus = 8;
+          disk_gb = 200;
+          ip = "192.0.2.2";
+          mac = "52:54:00:00:00:02";
+          forge_key = null;
+          repos = [ "allod/nexus" "allod/inventory" "allod/secrets" ];
+
+          # Illustrative synthetic hardware. `profiles` imports this as a NixOS
+          # module for the hypervisor toplevel; `nexus.nixosModules.host`
+          # provides systemd-boot, so this supplies only the root and EFI
+          # filesystems. Replace with your machine's generated hardware config.
+          hardware = { ... }: {
+            boot.initrd.availableKernelModules = [ "nvme" "xhci_pci" "ahci" "usb_storage" ];
+            boot.kernelModules = [ "kvm-intel" ];
+            fileSystems."/" = {
+              device = "/dev/disk/by-label/nixos";
+              fsType = "ext4";
+            };
+            fileSystems."/boot" = {
+              device = "/dev/disk/by-label/boot";
+              fsType = "vfat";
+            };
+          };
+        };
       };
 
       missingPlatforms =
