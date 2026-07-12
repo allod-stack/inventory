@@ -1,7 +1,7 @@
 {
-  "dev-1": {
+  "allod-dev": {
     "disk_gb": 50,
-    "forge_key": "dev_1",
+    "forge_key": "allod_vm",
     "ip": "192.0.2.10",
     "mac": "52:54:00:00:00:10",
     "memory_mb": 8192,
@@ -14,5 +14,15 @@
     ],
     "self_rebuild": false,
     "vcpus": 4
+  },
+  "privacy-1": {
+    "disk_gb": 20,
+    "forge_key": null,
+    "ip": "192.0.2.11",
+    "mac": "52:54:00:00:00:11",
+    "memory_mb": 4096,
+    "repos": [],
+    "self_rebuild": false,
+    "vcpus": 2
   }
 }

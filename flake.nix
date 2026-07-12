@@ -10,7 +10,7 @@
       lib = nixpkgs.lib;
 
       machines = {
-        dev-1 = {
+        allod-dev = {
           platform = "x86_64-linux";
           type = "dev";
           memory_mb = 8192;
@@ -18,7 +18,7 @@
           disk_gb = 50;
           ip = "192.0.2.10";
           mac = "52:54:00:00:00:10";
-          forge_key = "dev_1";
+          forge_key = "allod_vm";
           self_rebuild = false;
           repos = [ "workspace-tools" "strategy" "allod/secrets" "allod/inventory" "allod/memory" ];
         };
@@ -55,6 +55,19 @@
               fsType = "vfat";
             };
           };
+        };
+
+        privacy-1 = {
+          platform = "x86_64-linux";
+          type = "privacy";
+          memory_mb = 4096;
+          vcpus = 2;
+          disk_gb = 20;
+          ip = "192.0.2.11";
+          mac = "52:54:00:00:00:11";
+          forge_key = null;
+          self_rebuild = false;
+          repos = [];
         };
       };
 
@@ -164,15 +177,18 @@
                 done
               done
 
-              # Development VMs require profiles unless self_rebuild is false
+              # Self-rebuild VMs need the framework and data checkouts required
+              # by profiles flake evaluation.
               for vm in $(jq -r 'keys[]' "$specs"); do
-                forge_key=$(jq -r --arg v "$vm" '.[$v].forge_key' "$specs")
                 self_rebuild=$(jq -r --arg v "$vm" 'if .[$v] | has("self_rebuild") then .[$v].self_rebuild else true end' "$specs")
-                if [ "$forge_key" != "null" ] && [ "$self_rebuild" != "false" ]; then
-                  if ! jq -e --arg v "$vm" '.[$v].repos | index("profiles")' "$specs" >/dev/null 2>&1; then
-                    echo "ERROR: development VM '$vm' is missing required 'profiles' alias"
-                    errors=$((errors + 1))
-                  fi
+                if [ "$self_rebuild" = "true" ]; then
+                  for required in profiles secrets inventory; do
+                    if ! jq -e --arg v "$vm" --arg required "$required" \
+                        '.[$v].repos | index($required)' "$specs" >/dev/null 2>&1; then
+                      echo "ERROR: self-rebuild VM '$vm' is missing required '$required' alias"
+                      errors=$((errors + 1))
+                    fi
+                  done
                 fi
               done
 
