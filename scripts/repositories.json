@@ -1,11 +1,11 @@
 {
   "repositories": {
-    "workspace-tools": {
+    "allod/tools": {
       "source": "forge",
       "remote": "allod/tools",
       "checkout": "allod/tools"
     },
-    "strategy": {
+    "allod/strategy": {
       "source": "forge",
       "remote": "allod/strategy",
       "checkout": "allod/strategy"
