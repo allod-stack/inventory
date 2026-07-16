@@ -24,6 +24,26 @@
       "source": "forge",
       "remote": "allod/memory",
       "checkout": "allod/memory"
+    },
+    "allod/profiles": {
+      "source": "forge",
+      "remote": "allod/profiles",
+      "checkout": "allod/profiles"
+    },
+    "allod/vm": {
+      "source": "forge",
+      "remote": "allod/vm",
+      "checkout": "allod/vm"
+    },
+    "allod/nexus": {
+      "source": "forge",
+      "remote": "allod/nexus",
+      "checkout": "allod/nexus"
+    },
+    "allod/deploy": {
+      "source": "forge",
+      "remote": "allod/deploy",
+      "checkout": "allod/deploy"
     }
   }
 }

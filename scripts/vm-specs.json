@@ -10,7 +10,11 @@
       "strategy",
       "allod/secrets",
       "allod/inventory",
-      "allod/memory"
+      "allod/memory",
+      "allod/profiles",
+      "allod/vm",
+      "allod/nexus",
+      "allod/deploy"
     ],
     "self_rebuild": false,
     "vcpus": 4
