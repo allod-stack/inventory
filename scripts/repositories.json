@@ -25,10 +25,10 @@
       "remote": "allod/memory",
       "checkout": "allod/memory"
     },
-    "allod/profiles": {
+    "allod/archetypes": {
       "source": "forge",
-      "remote": "allod/profiles",
-      "checkout": "allod/profiles"
+      "remote": "allod/archetypes",
+      "checkout": "allod/archetypes"
     },
     "allod/vm": {
       "source": "forge",

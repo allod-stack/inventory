@@ -11,7 +11,7 @@
       "allod/secrets",
       "allod/inventory",
       "allod/memory",
-      "allod/profiles",
+      "allod/archetypes",
       "allod/vm",
       "allod/nexus",
       "allod/deploy"

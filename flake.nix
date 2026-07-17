@@ -20,7 +20,7 @@
           mac = "52:54:00:00:00:10";
           forge_key = "allod_vm";
           self_rebuild = false;
-          repos = [ "allod/tools" "allod/strategy" "allod/secrets" "allod/inventory" "allod/memory" "allod/profiles" "allod/vm" "allod/nexus" "allod/deploy" ];
+          repos = [ "allod/tools" "allod/strategy" "allod/secrets" "allod/inventory" "allod/memory" "allod/archetypes" "allod/vm" "allod/nexus" "allod/deploy" ];
         };
 
         # Synthetic hypervisor example. `profiles` always injects a `nexus`
