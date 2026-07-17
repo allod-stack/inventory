@@ -30,6 +30,11 @@
       "remote": "allod/archetypes",
       "checkout": "allod/archetypes"
     },
+    "allod/profiles": {
+      "source": "forge",
+      "remote": "allod/profiles",
+      "checkout": "allod/profiles"
+    },
     "allod/vm": {
       "source": "forge",
       "remote": "allod/vm",

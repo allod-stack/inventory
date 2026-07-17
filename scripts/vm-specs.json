@@ -12,6 +12,7 @@
       "allod/inventory",
       "allod/memory",
       "allod/archetypes",
+      "allod/profiles",
       "allod/vm",
       "allod/nexus",
       "allod/deploy"
