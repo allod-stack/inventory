@@ -13,6 +13,9 @@
         allod-dev = {
           platform = "x86_64-linux";
           type = "dev";
+          # Public microvm.nix example: later milestones select this machine
+          # for the microvm guest module.
+          runtime = "microvm";
           memory_mb = 8192;
           vcpus = 4;
           disk_gb = 50;
@@ -28,6 +31,10 @@
         # identity/machine assertion to hold. `vmSpecsJson` filters out
         # `type == "hypervisor"`, so this entry does not appear in
         # scripts/vm-specs.json and does not affect inventory's own checks.
+        # Hypervisors are not guests: this entry deliberately carries no
+        # `runtime` fact, and the runtime assertions below are scoped to
+        # non-hypervisor machines only, so it never needs one and never
+        # acquires a fake guest runtime.
         nexus = {
           platform = "x86_64-linux";
           type = "hypervisor";
@@ -60,6 +67,10 @@
         privacy-1 = {
           platform = "x86_64-linux";
           type = "privacy";
+          # Public libvirt example: this arc keeps the privacy VM on the
+          # existing libvirt XML/Tor topology, so libvirt stays a tested,
+          # first-class runtime path alongside microvm.
+          runtime = "libvirt";
           memory_mb = 4096;
           vcpus = 2;
           disk_gb = 20;
@@ -89,12 +100,45 @@
           "inventory machines with invalid Nix system: ${lib.concatStringsSep ", " (builtins.attrNames invalidPlatforms)}";
         lib.unique (map (m: m.platform) (builtins.attrValues platformMachines));
 
-      vmSpecs = lib.filterAttrs (_: m: m.type != "hypervisor") machines;
+      validRuntimes = [ "libvirt" "microvm" ];
 
-      vmSpecsJson = builtins.toJSON (lib.mapAttrs (name: m: {
-        inherit (m) memory_mb vcpus disk_gb ip mac forge_key repos;
+      # Parameterized on an explicit machine set, rather than closing over
+      # `machines`, so the runtime-fact-mutations check below can run this
+      # exact validation chain against sabotaged copies and prove each
+      # assertion actually fails, instead of only exercising the valid data.
+      mkVmSpecs = ms:
+        let
+          vms = lib.filterAttrs (_: m: m.type != "hypervisor") ms;
+
+          missingRuntime =
+            lib.filterAttrs (_: m: !(m ? runtime)) vms;
+
+          runtimeDeclared =
+            assert lib.assertMsg (missingRuntime == {})
+              "inventory machines missing runtime: ${lib.concatStringsSep ", " (builtins.attrNames missingRuntime)}";
+            vms;
+
+          nonStringRuntime =
+            lib.filterAttrs (_: m: !(builtins.isString m.runtime)) runtimeDeclared;
+
+          stringRuntime =
+            assert lib.assertMsg (nonStringRuntime == {})
+              "inventory machines with non-string runtime: ${lib.concatStringsSep ", " (builtins.attrNames nonStringRuntime)}";
+            runtimeDeclared;
+
+          unknownRuntime =
+            lib.filterAttrs (_: m: !(builtins.elem m.runtime validRuntimes)) stringRuntime;
+        in
+        assert lib.assertMsg (unknownRuntime == {})
+          "inventory machines with unknown runtime (expected one of: ${lib.concatStringsSep ", " validRuntimes}): ${lib.concatStringsSep ", " (builtins.attrNames unknownRuntime)}";
+        stringRuntime;
+
+      mkVmSpecsJson = ms: builtins.toJSON (lib.mapAttrs (name: m: {
+        inherit (m) memory_mb vcpus disk_gb ip mac forge_key repos runtime;
         self_rebuild = m.self_rebuild or true;
-      }) vmSpecs);
+      }) (mkVmSpecs ms));
+
+      vmSpecsJson = mkVmSpecsJson machines;
 
       mkChecks = system:
         let
@@ -200,6 +244,113 @@
               echo "Registry validation passed: $count repositories, all checks OK"
               touch "$out"
             '';
+
+          # Validator validation for the runtime fact (architecture.md
+          # principle 11): proves the assertions added by mkVmSpecs actually
+          # fail on sabotaged input, that hypervisors stay excluded rather
+          # than acquiring a fake guest runtime, that the public examples
+          # cover both enum values, and that the vm-specs-json drift check
+          # is not vacuous.
+          runtime-fact-mutations = pkgs.runCommand "runtime-fact-mutations-check"
+            { nativeBuildInputs = [ pkgs.jq pkgs.diffutils ]; }
+            (
+              let
+                machinesMissingRuntime = machines // {
+                  "allod-dev" = builtins.removeAttrs machines."allod-dev" [ "runtime" ];
+                };
+
+                machinesNonStringRuntime = machines // {
+                  "allod-dev" = machines."allod-dev" // { runtime = 42; };
+                };
+
+                machinesUnknownRuntime = machines // {
+                  "allod-dev" = machines."allod-dev" // { runtime = "bhyve"; };
+                };
+
+                # `tryEval` catches the `assert`/`throw` failures the runtime
+                # chain raises without aborting this flake's own evaluation,
+                # so a sabotaged fixture can prove a failure rather than only
+                # exercising the valid data. `deepSeq` forces the generated
+                # JSON string fully, since a shallow WHNF force alone would
+                # not walk every machine's `runtime` value.
+                attempt = ms: builtins.tryEval (builtins.deepSeq (mkVmSpecsJson ms) true);
+
+                results = {
+                  valid = attempt machines;
+                  missingRuntime = attempt machinesMissingRuntime;
+                  nonStringRuntime = attempt machinesNonStringRuntime;
+                  unknownRuntime = attempt machinesUnknownRuntime;
+                };
+
+                b = v: if v then "true" else "false";
+
+                realJson = builtins.toFile "vm-specs.json" vmSpecsJson;
+              in
+              ''
+                errors=0
+
+                check() {
+                  local label="$1" expected="$2" actual="$3"
+                  if [ "$actual" != "$expected" ]; then
+                    echo "ERROR: $label: expected success=$expected but got success=$actual"
+                    errors=$((errors + 1))
+                  else
+                    echo "OK: $label (success=$actual)"
+                  fi
+                }
+
+                check "valid machines evaluate"  true  "${b results.valid.success}"
+                check "missing runtime fails"    false "${b results.missingRuntime.success}"
+                check "non-string runtime fails" false "${b results.nonStringRuntime.success}"
+                check "unknown runtime fails"    false "${b results.unknownRuntime.success}"
+
+                if jq -e 'has("nexus")' ${realJson} >/dev/null; then
+                  echo "ERROR: hypervisor entry 'nexus' leaked into vmSpecsJson (must not acquire a fake guest runtime)"
+                  errors=$((errors + 1))
+                else
+                  echo "OK: hypervisor entry 'nexus' absent from vmSpecsJson"
+                fi
+
+                if ! jq -e '.["allod-dev"].runtime == "microvm"' ${realJson} >/dev/null; then
+                  echo "ERROR: allod-dev is no longer the public microvm example"
+                  errors=$((errors + 1))
+                else
+                  echo "OK: allod-dev is the public microvm example"
+                fi
+
+                if ! jq -e '.["privacy-1"].runtime == "libvirt"' ${realJson} >/dev/null; then
+                  echo "ERROR: privacy-1 is no longer the public libvirt example"
+                  errors=$((errors + 1))
+                else
+                  echo "OK: privacy-1 is the public libvirt example"
+                fi
+
+                # Prove the vm-specs-json drift check is not vacuous: mutate a
+                # copy of the committed file and confirm the same key-sorted
+                # diff idiom it runs actually disagrees.
+                jq -S . ${realJson} > /tmp/real-sorted.json
+                jq -S . ${self}/scripts/vm-specs.json > /tmp/committed-sorted.json
+                diff /tmp/real-sorted.json /tmp/committed-sorted.json || {
+                  echo "ERROR: committed vm-specs.json unexpectedly diverges before sabotage"
+                  errors=$((errors + 1))
+                }
+                jq -S '.["allod-dev"].runtime = "bhyve"' /tmp/committed-sorted.json > /tmp/sabotaged-sorted.json
+                if diff /tmp/real-sorted.json /tmp/sabotaged-sorted.json > /dev/null; then
+                  echo "ERROR: drift sabotage produced no diff; vm-specs-json check would not catch real drift"
+                  errors=$((errors + 1))
+                else
+                  echo "OK: sabotaged JSON diverges from generated JSON (drift detection proven)"
+                fi
+
+                if [ "$errors" -gt 0 ]; then
+                  echo "runtime-fact-mutations failed with $errors error(s)"
+                  exit 1
+                fi
+
+                echo "runtime-fact-mutations passed: valid data evaluates, each sabotaged fixture fails, hypervisor stays excluded, both public examples are present, and drift detection is proven"
+                touch "$out"
+              ''
+            );
         };
     in
     {

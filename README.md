@@ -36,6 +36,7 @@ This repo does **not** own:
 | `lib.vmSpecsJson` | JSON string | VM-facing specs (hypervisors excluded), serialized to JSON |
 | `checks.<system>.vm-specs-json` | derivation | fails if `scripts/vm-specs.json` diverges from `lib.vmSpecsJson` |
 | `checks.<system>.repository-registry` | derivation | validates `scripts/repositories.json` and its cross-references |
+| `checks.<system>.runtime-fact-mutations` | derivation | proves a missing, non-string, or unknown `runtime` fails evaluation, that hypervisors stay excluded, that both public runtime examples are present, and that JSON drift is detected |
 
 The flake's only input is `nixpkgs` (nixos-25.11). `checks` is generated per
 entry in `lib.supportedPlatforms` (currently `x86_64-linux` only).
@@ -56,6 +57,7 @@ Each entry in `machines` is an attrset:
 |---|---|---|
 | `platform` | string | Nix system, e.g. `x86_64-linux`; required — asserted present and valid |
 | `type` | string | `dev`, `privacy`, or `hypervisor` |
+| `runtime` | string | `libvirt` or `microvm`; required for non-hypervisor machines — asserted present, a string, and a known value; hypervisor machines carry no `runtime` |
 | `memory_mb` | int | RAM |
 | `vcpus` | int | vCPU count |
 | `disk_gb` | int | root disk size |
@@ -66,19 +68,21 @@ Each entry in `machines` is an attrset:
 | `repos` | list of string | repo-registry aliases to check out on the machine |
 | `hardware` | NixOS module | hypervisor-only; imported by `profiles` for the host toplevel |
 
-Example machines shipped in the template: `allod-dev` (`dev`), `privacy-1`
-(`privacy`), and `nexus` (`hypervisor`). The `nexus` entry is present because
-`profiles` always injects a `nexus` identity and asserts a matching machine; its
-`hardware` attr is illustrative and meant to be replaced with a real generated
-hardware config.
+Example machines shipped in the template: `allod-dev` (`dev`,
+`runtime = "microvm"`), `privacy-1` (`privacy`, `runtime = "libvirt"`), and
+`nexus` (`hypervisor`, no `runtime`). Keeping one example of each runtime gives
+later consumers (`archetypes`, `nexus`) both paths to select against. The
+`nexus` entry is present because `profiles` always injects a `nexus` identity
+and asserts a matching machine; its `hardware` attr is illustrative and meant
+to be replaced with a real generated hardware config.
 
 ## Derived VM specs
 
 `lib.vmSpecsJson` maps every non-hypervisor machine to only the fields host
 tooling needs — `memory_mb`, `vcpus`, `disk_gb`, `ip`, `mac`, `forge_key`,
-`repos`, `self_rebuild` — dropping `platform`, `type`, and `hardware`.
-`scripts/vm-specs.json` is the committed, key-sorted copy. Regenerate it after
-editing `machines`:
+`repos`, `self_rebuild`, `runtime` — dropping `platform`, `type`, and
+`hardware`. `scripts/vm-specs.json` is the committed, key-sorted copy.
+Regenerate it after editing `machines`:
 
 ```
 nix eval .#lib.vmSpecsJson --raw | jq -S . > scripts/vm-specs.json
@@ -116,6 +120,24 @@ Evaluating the flake fails fast if:
 `lib.supportedPlatforms` is the deduplicated list of the surviving platforms and
 drives the per-system `checks` attribute set. `profiles` further asserts exactly
 one supported platform when building its installer.
+
+## Runtime assertions
+
+Evaluating the flake fails fast for any non-hypervisor (`type != "hypervisor"`)
+machine if:
+
+- `runtime` is missing — `inventory machines missing runtime: <names>`
+- `runtime` is not a string — `inventory machines with non-string runtime: <names>`
+- `runtime` is not `libvirt` or `microvm` — `inventory machines with unknown
+  runtime (expected one of: libvirt, microvm): <names>`
+
+Hypervisor machines are exempt: they are not guests, so they carry no
+`runtime` fact and never appear in `vmSpecsJson` regardless of one. The
+`runtime-fact-mutations` check runs this exact validation chain (via
+`mkVmSpecs`/`mkVmSpecsJson`, parameterized on an explicit machine set) against
+sabotaged copies of `machines` and proves each failure mode actually fails,
+that the hypervisor stays excluded, that both public runtime examples exist,
+and that the `vm-specs-json` drift check is not vacuous.
 
 ## Consumers
 
