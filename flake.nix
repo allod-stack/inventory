@@ -32,9 +32,10 @@
         # `type == "hypervisor"`, so this entry does not appear in
         # scripts/vm-specs.json and does not affect inventory's own checks.
         # Hypervisors are not guests: this entry deliberately carries no
-        # `runtime` fact, and the runtime assertions below are scoped to
-        # non-hypervisor machines only, so it never needs one and never
-        # acquires a fake guest runtime.
+        # `runtime` fact. Evaluation actively rejects a hypervisor that
+        # declares one (see the `hypervisorWithRuntime` diagnostic below), so
+        # it is enforced, not merely a side effect of the non-hypervisor
+        # filter used elsewhere.
         nexus = {
           platform = "x86_64-linux";
           type = "hypervisor";
@@ -102,41 +103,82 @@
 
       validRuntimes = [ "libvirt" "microvm" ];
 
+      # Pure, non-throwing classification of an arbitrary machine set into
+      # four diagnostic sets. Each predicate is guarded on the previous
+      # condition (hypervisor-vs-guest by `type`, then `m ? runtime`, then
+      # `isString`, then `elem`), which keeps the four sets disjoint: a
+      # machine with exactly one problem trips exactly one diagnostic, no
+      # matter what order mkVmSpecs below asserts them in. That disjointness
+      # is what lets the runtime-fact-mutations check pin a sabotaged
+      # fixture to the one diagnostic it claims to exercise, rather than
+      # only to whether evaluation failed for *some* reason.
+      #
+      # This matters because the sets are not disjoint by accident: an
+      # earlier, unguarded version computed `nonStringRuntime` and
+      # `unknownRuntime` by re-filtering whatever the previous stage let
+      # through, so `runtime = 42` failed `isString` but *also* failed
+      # `builtins.elem 42 [ "libvirt" "microvm" ]` (Nix's `==` across types
+      # is false, not a type error). A check that only asked "did evaluation
+      # fail" could not tell those two apart, and deleting the non-string
+      # assertion entirely left it green because the unknown-runtime
+      # assertion caught the same fixture instead (allod/inventory PR #10
+      # review). Guarding each predicate on the previous one so a machine
+      # can only ever match its own diagnostic removes that blind spot at
+      # the source, rather than papering over it in the check.
+      runtimeDiagnostics = ms:
+        let
+          hypervisors = lib.filterAttrs (_: m: m.type == "hypervisor") ms;
+          vms = lib.filterAttrs (_: m: m.type != "hypervisor") ms;
+        in {
+          hypervisorWithRuntime = lib.filterAttrs (_: m: m ? runtime) hypervisors;
+          missingRuntime = lib.filterAttrs (_: m: !(m ? runtime)) vms;
+          nonStringRuntime =
+            lib.filterAttrs (_: m: (m ? runtime) && !(builtins.isString m.runtime)) vms;
+          unknownRuntime =
+            lib.filterAttrs
+              (_: m: (m ? runtime) && builtins.isString m.runtime && !(builtins.elem m.runtime validRuntimes))
+              vms;
+        };
+
       # Parameterized on an explicit machine set, rather than closing over
       # `machines`, so the runtime-fact-mutations check below can run this
       # exact validation chain against sabotaged copies and prove each
       # assertion actually fails, instead of only exercising the valid data.
       mkVmSpecs = ms:
         let
-          vms = lib.filterAttrs (_: m: m.type != "hypervisor") ms;
-
-          missingRuntime =
-            lib.filterAttrs (_: m: !(m ? runtime)) vms;
+          diag = runtimeDiagnostics ms;
 
           runtimeDeclared =
-            assert lib.assertMsg (missingRuntime == {})
-              "inventory machines missing runtime: ${lib.concatStringsSep ", " (builtins.attrNames missingRuntime)}";
-            vms;
-
-          nonStringRuntime =
-            lib.filterAttrs (_: m: !(builtins.isString m.runtime)) runtimeDeclared;
+            assert lib.assertMsg (diag.hypervisorWithRuntime == {})
+              "inventory hypervisor machines must not declare runtime: ${lib.concatStringsSep ", " (builtins.attrNames diag.hypervisorWithRuntime)}";
+            assert lib.assertMsg (diag.missingRuntime == {})
+              "inventory machines missing runtime: ${lib.concatStringsSep ", " (builtins.attrNames diag.missingRuntime)}";
+            lib.filterAttrs (_: m: m.type != "hypervisor") ms;
 
           stringRuntime =
-            assert lib.assertMsg (nonStringRuntime == {})
-              "inventory machines with non-string runtime: ${lib.concatStringsSep ", " (builtins.attrNames nonStringRuntime)}";
+            assert lib.assertMsg (diag.nonStringRuntime == {})
+              "inventory machines with non-string runtime: ${lib.concatStringsSep ", " (builtins.attrNames diag.nonStringRuntime)}";
             runtimeDeclared;
-
-          unknownRuntime =
-            lib.filterAttrs (_: m: !(builtins.elem m.runtime validRuntimes)) stringRuntime;
         in
-        assert lib.assertMsg (unknownRuntime == {})
-          "inventory machines with unknown runtime (expected one of: ${lib.concatStringsSep ", " validRuntimes}): ${lib.concatStringsSep ", " (builtins.attrNames unknownRuntime)}";
+        assert lib.assertMsg (diag.unknownRuntime == {})
+          "inventory machines with unknown runtime (expected one of: ${lib.concatStringsSep ", " validRuntimes}): ${lib.concatStringsSep ", " (builtins.attrNames diag.unknownRuntime)}";
         stringRuntime;
 
       mkVmSpecsJson = ms: builtins.toJSON (lib.mapAttrs (name: m: {
         inherit (m) memory_mb vcpus disk_gb ip mac forge_key repos runtime;
         self_rebuild = m.self_rebuild or true;
       }) (mkVmSpecs ms));
+
+      # Forces the runtime validation chain even when a consumer reads the
+      # raw `machines`/`lib.machines` surface instead of `lib.vmSpecsJson`.
+      # `archetypes` consumes `inventory.machines` directly, and a
+      # downstream `nix flake check` does not evaluate an input's own
+      # checks, so without this nothing would catch bad runtime data on
+      # that path (allod/inventory PR #10 review). `builtins.seq` forces
+      # `mkVmSpecs machines` for its assertions and then returns the
+      # original `machines` value unchanged, so this is a validation
+      # trip-wire, not a transform: consumers still see the same shape.
+      checkedMachines = builtins.seq (mkVmSpecs machines) machines;
 
       vmSpecsJson = mkVmSpecsJson machines;
 
@@ -246,15 +288,21 @@
             '';
 
           # Validator validation for the runtime fact (architecture.md
-          # principle 11): proves the assertions added by mkVmSpecs actually
-          # fail on sabotaged input, that hypervisors stay excluded rather
-          # than acquiring a fake guest runtime, that the public examples
-          # cover both enum values, and that the vm-specs-json drift check
-          # is not vacuous.
+          # principle 11): proves each fixture is pinned to the one
+          # diagnostic it targets (not just "evaluation failed for some
+          # reason" — see runtimeDiagnostics above for why that distinction
+          # is load-bearing), that the real mkVmSpecsJson path actually
+          # rejects every fixture, that a hypervisor cannot silently acquire
+          # a runtime, that the public examples cover both enum values, and
+          # that the vm-specs-json drift check is not vacuous.
           runtime-fact-mutations = pkgs.runCommand "runtime-fact-mutations-check"
             { nativeBuildInputs = [ pkgs.jq pkgs.diffutils ]; }
             (
               let
+                machinesHypervisorWithRuntime = machines // {
+                  nexus = machines.nexus // { runtime = "microvm"; };
+                };
+
                 machinesMissingRuntime = machines // {
                   "allod-dev" = builtins.removeAttrs machines."allod-dev" [ "runtime" ];
                 };
@@ -267,20 +315,36 @@
                   "allod-dev" = machines."allod-dev" // { runtime = "bhyve"; };
                 };
 
-                # `tryEval` catches the `assert`/`throw` failures the runtime
-                # chain raises without aborting this flake's own evaluation,
-                # so a sabotaged fixture can prove a failure rather than only
-                # exercising the valid data. `deepSeq` forces the generated
-                # JSON string fully, since a shallow WHNF force alone would
-                # not walk every machine's `runtime` value.
-                attempt = ms: builtins.tryEval (builtins.deepSeq (mkVmSpecsJson ms) true);
+                allFields = [ "hypervisorWithRuntime" "missingRuntime" "nonStringRuntime" "unknownRuntime" ];
 
-                results = {
-                  valid = attempt machines;
-                  missingRuntime = attempt machinesMissingRuntime;
-                  nonStringRuntime = attempt machinesNonStringRuntime;
-                  unknownRuntime = attempt machinesUnknownRuntime;
-                };
+                # True only if fixture `ms` trips exactly `field` (naming
+                # `machine`) among the four diagnostics, and none of the
+                # other three. This is the actual fix for the review finding:
+                # a boolean success/failure comparison could not tell "the
+                # non-string assertion fired" apart from "a different
+                # assertion fired and happened to also reject the same bad
+                # value," so a fixture must instead be checked against the
+                # specific diagnostic set it claims to exercise.
+                pinnedTo = field: machine: ms:
+                  let
+                    diag = runtimeDiagnostics ms;
+                    hit = diag.${field};
+                    otherFields = lib.filter (f: f != field) allFields;
+                  in
+                  (builtins.attrNames hit == [ machine ])
+                  && lib.all (f: diag.${f} == {}) otherFields;
+
+                # True if the real, consumed validation path (mkVmSpecsJson,
+                # which mkVmSpecs feeds) actually throws for fixture `ms`.
+                # `pinnedTo` alone would not catch a diagnostic that is
+                # computed correctly but never asserted on by mkVmSpecs;
+                # this closes that gap. `deepSeq` forces the generated JSON
+                # string fully, since a shallow WHNF force alone would not
+                # walk every machine's `runtime` value.
+                rejects = ms: !(builtins.tryEval (builtins.deepSeq (mkVmSpecsJson ms) true)).success;
+
+                validDiag = runtimeDiagnostics machines;
+                validHasNoDiagnostics = lib.all (f: validDiag.${f} == {}) allFields;
 
                 b = v: if v then "true" else "false";
 
@@ -292,17 +356,27 @@
                 check() {
                   local label="$1" expected="$2" actual="$3"
                   if [ "$actual" != "$expected" ]; then
-                    echo "ERROR: $label: expected success=$expected but got success=$actual"
+                    echo "ERROR: $label: expected $expected but got $actual"
                     errors=$((errors + 1))
                   else
-                    echo "OK: $label (success=$actual)"
+                    echo "OK: $label ($actual)"
                   fi
                 }
 
-                check "valid machines evaluate"  true  "${b results.valid.success}"
-                check "missing runtime fails"    false "${b results.missingRuntime.success}"
-                check "non-string runtime fails" false "${b results.nonStringRuntime.success}"
-                check "unknown runtime fails"    false "${b results.unknownRuntime.success}"
+                check "valid machines have no runtime diagnostics" true "${b validHasNoDiagnostics}"
+                check "valid machines evaluate"                    true "${b (!(rejects machines))}"
+
+                check "hypervisor-with-runtime: pinned to its own diagnostic" true "${b (pinnedTo "hypervisorWithRuntime" "nexus" machinesHypervisorWithRuntime)}"
+                check "hypervisor-with-runtime: fails mkVmSpecsJson"          true "${b (rejects machinesHypervisorWithRuntime)}"
+
+                check "missing runtime: pinned to its own diagnostic" true "${b (pinnedTo "missingRuntime" "allod-dev" machinesMissingRuntime)}"
+                check "missing runtime: fails mkVmSpecsJson"          true "${b (rejects machinesMissingRuntime)}"
+
+                check "non-string runtime: pinned to its own diagnostic" true "${b (pinnedTo "nonStringRuntime" "allod-dev" machinesNonStringRuntime)}"
+                check "non-string runtime: fails mkVmSpecsJson"          true "${b (rejects machinesNonStringRuntime)}"
+
+                check "unknown runtime: pinned to its own diagnostic" true "${b (pinnedTo "unknownRuntime" "allod-dev" machinesUnknownRuntime)}"
+                check "unknown runtime: fails mkVmSpecsJson"          true "${b (rejects machinesUnknownRuntime)}"
 
                 if jq -e 'has("nexus")' ${realJson} >/dev/null; then
                   echo "ERROR: hypervisor entry 'nexus' leaked into vmSpecsJson (must not acquire a fake guest runtime)"
@@ -347,17 +421,18 @@
                   exit 1
                 fi
 
-                echo "runtime-fact-mutations passed: valid data evaluates, each sabotaged fixture fails, hypervisor stays excluded, both public examples are present, and drift detection is proven"
+                echo "runtime-fact-mutations passed: valid data has no diagnostics, each sabotaged fixture is pinned to exactly the diagnostic it targets and fails the real mkVmSpecsJson path, hypervisor stays excluded, both public examples are present, and drift detection is proven"
                 touch "$out"
               ''
             );
         };
     in
     {
-      inherit machines;
+      machines = checkedMachines;
 
       lib = {
-        inherit machines supportedPlatforms vmSpecsJson;
+        machines = checkedMachines;
+        inherit supportedPlatforms vmSpecsJson;
       };
 
       checks = lib.genAttrs supportedPlatforms mkChecks;
