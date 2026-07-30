@@ -17,7 +17,7 @@
       "allod/nexus",
       "allod/deploy"
     ],
-    "runtime": "microvm",
+    "runtime": "libvirt",
     "self_rebuild": false,
     "vcpus": 4
   },

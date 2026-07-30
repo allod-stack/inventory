@@ -10,12 +10,14 @@
       lib = nixpkgs.lib;
 
       machines = {
+        # The operator's own development machine. It stays on libvirt: a dev
+        # guest that fails to boot takes its own repair environment with it, so
+        # the machine the work happens from is the last to move onto a new
+        # runtime, not the first.
         allod-dev = {
           platform = "x86_64-linux";
           type = "dev";
-          # Public microvm.nix example: later milestones select this machine
-          # for the microvm guest module.
-          runtime = "microvm";
+          runtime = "libvirt";
           memory_mb = 8192;
           vcpus = 4;
           disk_gb = 50;
@@ -25,6 +27,15 @@
           self_rebuild = false;
           repos = [ "allod/tools" "allod/strategy" "allod/secrets" "allod/inventory" "allod/memory" "allod/archetypes" "allod/profiles" "allod/vm" "allod/nexus" "allod/deploy" ];
         };
+
+        # The microvm example machine is deliberately absent until it exists.
+        # A machine entry is not self-contained: adding one requires a matching
+        # identity, a profile, and per-machine encrypted credentials, and
+        # creating those needs a host key generated on the host. So the machine
+        # that first selects the microvm runtime is added in the same change
+        # that provisions it, rather than sitting here as data nothing can
+        # build. The runtime enum's microvm branch is covered by the mutation
+        # fixtures below, not by an example machine.
 
         # Synthetic hypervisor example. `profiles` always injects a `nexus`
         # identity, so its machine set must contain a `nexus` entry for the
@@ -385,11 +396,14 @@
                   echo "OK: hypervisor entry 'nexus' absent from vmSpecsJson"
                 fi
 
-                if ! jq -e '.["allod-dev"].runtime == "microvm"' ${realJson} >/dev/null; then
-                  echo "ERROR: allod-dev is no longer the public microvm example"
+                # The machine the operator develops from is the last to move,
+                # not the first. A dev guest that fails to boot takes its own
+                # repair environment with it.
+                if ! jq -e '.["allod-dev"].runtime == "libvirt"' ${realJson} >/dev/null; then
+                  echo "ERROR: allod-dev must stay on libvirt; the first microvm selection is a purpose-made machine"
                   errors=$((errors + 1))
                 else
-                  echo "OK: allod-dev is the public microvm example"
+                  echo "OK: allod-dev stays on libvirt"
                 fi
 
                 if ! jq -e '.["privacy-1"].runtime == "libvirt"' ${realJson} >/dev/null; then
