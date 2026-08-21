@@ -56,7 +56,7 @@
           ip = "192.0.2.2";
           mac = "52:54:00:00:00:02";
           forge_key = null;
-          repos = [ "allod/nexus" "allod/inventory" "allod/secrets" ];
+          repos = [ "allod/nexus" "allod/inventory" "allod/secrets" "allod/profiles" ];
 
           # Illustrative synthetic hardware. `profiles` imports this as a NixOS
           # module for the hypervisor toplevel; `nexus.nixosModules.host`
@@ -193,6 +193,15 @@
 
       vmSpecsJson = mkVmSpecsJson machines;
 
+      # Repository validation consumes the raw machine set rather than the
+      # guest-only vmSpecsJson projection. Only the fields needed by the
+      # validator are serialized: hypervisor hardware is a module function
+      # and therefore cannot be represented in JSON.
+      machineRepositoriesJson = builtins.toJSON (lib.mapAttrs (_: m: {
+        inherit (m) type repos;
+        self_rebuild = m.self_rebuild or true;
+      }) machines);
+
       mkChecks = system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
@@ -215,86 +224,151 @@
             { nativeBuildInputs = [ pkgs.jq ]; }
             ''
               registry=${self}/scripts/repositories.json
+              machines=${builtins.toFile "machine-repositories.json" machineRepositoriesJson}
 
-              jq empty "$registry" || { echo "ERROR: repositories.json is not valid JSON"; exit 1; }
+              validate_registry() {
+                local candidate_registry="$1"
+                local candidate_machines="$2"
+                local errors=0
+                local count
+                local alias source remote checkout machine repo_alias dupes machine_type self_rebuild required_alias
 
-              count=$(jq '.repositories | length' "$registry")
-              if [ "$count" -eq 0 ]; then
-                echo "ERROR: registry has no repository entries"
-                exit 1
-              fi
-
-              errors=0
-              for alias in $(jq -r '.repositories | keys[]' "$registry"); do
-                source=$(jq -r --arg a "$alias" '.repositories[$a].source // empty' "$registry")
-                remote=$(jq -r --arg a "$alias" '.repositories[$a].remote // empty' "$registry")
-                checkout=$(jq -r --arg a "$alias" '.repositories[$a].checkout // empty' "$registry")
-
-                if [ -z "$source" ] || [ -z "$remote" ] || [ -z "$checkout" ]; then
-                  echo "ERROR: $alias: missing required field (source, remote, checkout)"
-                  errors=$((errors + 1))
-                  continue
+                if ! jq empty "$candidate_registry"; then
+                  echo "ERROR: repositories.json is not valid JSON"
+                  return 1
                 fi
 
-                if [ "$source" != "forge" ] && [ "$source" != "git" ]; then
-                  echo "ERROR: $alias: unknown source type '$source' (must be 'forge' or 'git')"
-                  errors=$((errors + 1))
+                count=$(jq '.repositories | length' "$candidate_registry")
+                if [ "$count" -eq 0 ]; then
+                  echo "ERROR: registry has no repository entries"
+                  return 1
                 fi
 
-                if echo "$remote" | grep -qE '(\s|\.\.|^/|/$)'; then
-                  echo "ERROR: $alias: unsafe remote value '$remote'"
-                  errors=$((errors + 1))
-                fi
+                while IFS= read -r alias; do
+                  source=$(jq -r --arg a "$alias" '.repositories[$a].source // empty' "$candidate_registry")
+                  remote=$(jq -r --arg a "$alias" '.repositories[$a].remote // empty' "$candidate_registry")
+                  checkout=$(jq -r --arg a "$alias" '.repositories[$a].checkout // empty' "$candidate_registry")
 
-                if echo "$checkout" | grep -qE '(\s|\.\.|^/|/$)'; then
-                  echo "ERROR: $alias: unsafe checkout value '$checkout'"
-                  errors=$((errors + 1))
-                fi
-              done
+                  if [ -z "$source" ] || [ -z "$remote" ] || [ -z "$checkout" ]; then
+                    echo "ERROR: $alias: missing required field (source, remote, checkout)"
+                    errors=$((errors + 1))
+                    continue
+                  fi
 
-              specs=${self}/scripts/vm-specs.json
-              for vm in $(jq -r 'keys[]' "$specs"); do
-                dupes=$(jq -r --arg v "$vm" --slurpfile reg "$registry" \
-                  '.[$v].repos as $aliases
-                   | [ $aliases[] | . as $a | $reg[0].repositories[$a].checkout // empty ]
-                   | map(select(. != ""))
-                   | group_by(.) | map(select(length > 1)) | .[0][0] // empty' "$specs")
-                if [ -n "$dupes" ]; then
-                  echo "ERROR: VM '$vm' has duplicate checkout path: $dupes"
-                  errors=$((errors + 1))
-                fi
-              done
-
-              for vm in $(jq -r 'keys[]' "$specs"); do
-                for repo_alias in $(jq -r --arg v "$vm" '.[$v].repos[]' "$specs"); do
-                  if ! jq -e --arg a "$repo_alias" '.repositories[$a]' "$registry" >/dev/null 2>&1; then
-                    echo "ERROR: VM '$vm' references unknown alias '$repo_alias'"
+                  if [ "$source" != "forge" ] && [ "$source" != "git" ]; then
+                    echo "ERROR: $alias: unknown source type '$source' (must be 'forge' or 'git')"
                     errors=$((errors + 1))
                   fi
-                done
-              done
 
-              # Self-rebuild VMs need the framework and data checkouts required
-              # by profiles flake evaluation.
-              for vm in $(jq -r 'keys[]' "$specs"); do
-                self_rebuild=$(jq -r --arg v "$vm" 'if .[$v] | has("self_rebuild") then .[$v].self_rebuild else true end' "$specs")
-                if [ "$self_rebuild" = "true" ]; then
-                  for required in profiles secrets inventory; do
-                    if ! jq -e --arg v "$vm" --arg required "$required" \
-                        '.[$v].repos | index($required)' "$specs" >/dev/null 2>&1; then
-                      echo "ERROR: self-rebuild VM '$vm' is missing required '$required' alias"
+                  if echo "$remote" | grep -qE '(\s|\.\.|^/|/$)'; then
+                    echo "ERROR: $alias: unsafe remote value '$remote'"
+                    errors=$((errors + 1))
+                  fi
+
+                  if echo "$checkout" | grep -qE '(\s|\.\.|^/|/$)'; then
+                    echo "ERROR: $alias: unsafe checkout value '$checkout'"
+                    errors=$((errors + 1))
+                  fi
+                done < <(jq -r '.repositories | keys[]' "$candidate_registry")
+
+                while IFS= read -r machine; do
+                  while IFS= read -r repo_alias; do
+                    if ! jq -e --arg a "$repo_alias" '.repositories[$a]' "$candidate_registry" >/dev/null 2>&1; then
+                      echo "ERROR: machine '$machine' references unknown alias '$repo_alias'"
                       errors=$((errors + 1))
                     fi
-                  done
-                fi
-              done
+                  done < <(jq -r --arg machine "$machine" '.[$machine].repos[]' "$candidate_machines")
 
-              if [ "$errors" -gt 0 ]; then
-                echo "Registry validation failed with $errors error(s)"
+                  dupes=$(jq -r --arg machine "$machine" --slurpfile reg "$candidate_registry" \
+                    '.[$machine].repos as $aliases
+                     | [ $aliases[] | . as $a | $reg[0].repositories[$a].checkout // empty ]
+                     | map(select(. != "")) | sort
+                     | group_by(.) | map(select(length > 1)) | .[0][0] // empty' "$candidate_machines")
+                  if [ -n "$dupes" ]; then
+                    echo "ERROR: machine '$machine' has duplicate checkout path: $dupes"
+                    errors=$((errors + 1))
+                  fi
+
+                  machine_type=$(jq -r --arg machine "$machine" '.[$machine].type' "$candidate_machines")
+                  self_rebuild=$(jq -r --arg machine "$machine" '.[$machine].self_rebuild' "$candidate_machines")
+                  if [ "$machine_type" = "hypervisor" ] || [ "$self_rebuild" = "true" ]; then
+                    for required_alias in allod/profiles allod/secrets allod/inventory; do
+                      if ! jq -e --arg machine "$machine" --arg required "$required_alias" \
+                          '.[$machine].repos | index($required)' "$candidate_machines" >/dev/null 2>&1; then
+                        echo "ERROR: $machine_type machine '$machine' is missing required alias '$required_alias'"
+                        errors=$((errors + 1))
+                      fi
+                    done
+                  fi
+                done < <(jq -r 'keys[]' "$candidate_machines")
+
+                if [ "$errors" -gt 0 ]; then
+                  echo "Registry validation failed with $errors error(s)"
+                  return 1
+                fi
+
+                echo "Registry validation passed: $count repositories, all machines checked"
+              }
+
+              validate_registry "$registry" "$machines"
+
+              expected='["allod/inventory","allod/nexus","allod/profiles","allod/secrets"]'
+              previous='["allod/inventory","allod/nexus","allod/secrets"]'
+              actual=$(jq -c '.nexus.repos | sort' "$machines")
+              if [ "$actual" != "$expected" ]; then
+                echo "ERROR: public Nexus fixture must contain exactly nexus, inventory, secrets, and profiles"
                 exit 1
               fi
+              added=$(jq -cn --argjson actual "$actual" --argjson previous "$previous" '$actual - $previous')
+              removed=$(jq -cn --argjson actual "$actual" --argjson previous "$previous" '$previous - $actual')
+              if [ "$added" != '["allod/profiles"]' ] || [ "$removed" != '[]' ]; then
+                echo "ERROR: public Nexus fixture delta must add only allod/profiles"
+                exit 1
+              fi
+              echo "OK: public Nexus fixture adds only allod/profiles and retains its three existing aliases"
 
-              echo "Registry validation passed: $count repositories, all checks OK"
+              for required_alias in allod/profiles allod/secrets allod/inventory; do
+                sabotaged_machines=/tmp/machines-without-$(basename "$required_alias").json
+                sabotage_log=/tmp/missing-$(basename "$required_alias").log
+                jq --arg required "$required_alias" '.nexus.repos -= [$required]' "$machines" > "$sabotaged_machines"
+                if validate_registry "$registry" "$sabotaged_machines" > "$sabotage_log" 2>&1; then
+                  echo "ERROR: removing required Nexus alias '$required_alias' still passed validation"
+                  exit 1
+                fi
+                if ! grep -F "hypervisor machine 'nexus' is missing required alias '$required_alias'" "$sabotage_log" >/dev/null; then
+                  echo "ERROR: removal of '$required_alias' failed for an unexpected reason"
+                  cat "$sabotage_log"
+                  exit 1
+                fi
+                echo "OK: removing required Nexus alias '$required_alias' fails with its pinned diagnostic"
+              done
+
+              jq '.nexus.repos[0] = "fixture/unknown"' "$machines" > /tmp/unknown-alias.json
+              if validate_registry "$registry" /tmp/unknown-alias.json > /tmp/unknown-alias.log 2>&1; then
+                echo "ERROR: an unknown hypervisor alias still passed validation"
+                exit 1
+              fi
+              if ! grep -F "machine 'nexus' references unknown alias 'fixture/unknown'" /tmp/unknown-alias.log >/dev/null; then
+                echo "ERROR: unknown alias sabotage failed for an unexpected reason"
+                cat /tmp/unknown-alias.log
+                exit 1
+              fi
+              echo "OK: an unknown hypervisor alias fails with its pinned diagnostic"
+
+              jq '.repositories["fixture/profiles-copy"] = .repositories["allod/profiles"]' \
+                "$registry" > /tmp/duplicate-registry.json
+              jq '.nexus.repos += ["fixture/profiles-copy"]' "$machines" > /tmp/duplicate-machines.json
+              if validate_registry /tmp/duplicate-registry.json /tmp/duplicate-machines.json > /tmp/duplicate.log 2>&1; then
+                echo "ERROR: duplicate hypervisor checkout paths still passed validation"
+                exit 1
+              fi
+              if ! grep -F "machine 'nexus' has duplicate checkout path: allod/profiles" /tmp/duplicate.log >/dev/null; then
+                echo "ERROR: duplicate checkout sabotage failed for an unexpected reason"
+                cat /tmp/duplicate.log
+                exit 1
+              fi
+              echo "OK: duplicate hypervisor checkout paths fail with a pinned diagnostic"
+
               touch "$out"
             '';
 

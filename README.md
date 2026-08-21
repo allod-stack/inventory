@@ -35,7 +35,7 @@ This repo does **not** own:
 | `lib.supportedPlatforms` | list of string | unique Nix systems across all machines (asserted valid) |
 | `lib.vmSpecsJson` | JSON string | VM-facing specs (hypervisors excluded), serialized to JSON |
 | `checks.<system>.vm-specs-json` | derivation | fails if `scripts/vm-specs.json` diverges from `lib.vmSpecsJson` |
-| `checks.<system>.repository-registry` | derivation | validates `scripts/repositories.json` and its cross-references |
+| `checks.<system>.repository-registry` | derivation | validates `scripts/repositories.json` against every raw machine, including hypervisors, and proves its required-alias guards fail under sabotage |
 | `checks.<system>.runtime-fact-mutations` | derivation | proves a missing, non-string, or unknown `runtime` fails evaluation, that hypervisors stay excluded, that both public runtime examples are present, and that JSON drift is detected |
 
 The flake's only input is `nixpkgs` (nixos-25.11). `checks` is generated per
@@ -69,12 +69,13 @@ Each entry in `machines` is an attrset:
 | `hardware` | NixOS module | hypervisor-only; imported by `profiles` for the host toplevel |
 
 Example machines shipped in the template: `allod-dev` (`dev`,
-`runtime = "microvm"`), `privacy-1` (`privacy`, `runtime = "libvirt"`), and
-`nexus` (`hypervisor`, no `runtime`). Keeping one example of each runtime gives
-later consumers (`archetypes`, `nexus`) both paths to select against. The
-`nexus` entry is present because `profiles` always injects a `nexus` identity
-and asserts a matching machine; its `hardware` attr is illustrative and meant
-to be replaced with a real generated hardware config.
+`runtime = "libvirt"`), `privacy-1` (`privacy`, `runtime = "libvirt"`), and
+`nexus` (`hypervisor`, no `runtime`). The microvm enum path is covered by a
+mutation fixture rather than a machine that cannot build without matching
+private identity and profile data. The `nexus` entry is present because
+`profiles` always injects a `nexus` identity and asserts a matching machine;
+its `hardware` attr is illustrative and meant to be replaced with a real
+generated hardware config.
 
 ## Derived VM specs
 
@@ -104,10 +105,17 @@ Each alias resolves to:
 
 A machine's `repos` list references these aliases; host scripts (`nexus`)
 resolve an alias to its `remote`/`checkout` when cloning a machine's workspace.
-The `repository-registry` check enforces: valid JSON, at least one entry,
-required fields present, a known `source`, safe `remote`/`checkout` values, no
-duplicate checkout paths within a VM, every VM-referenced alias defined, and
-that self-rebuild VMs list the `profiles`, `secrets`, and `inventory` repos.
+The `repository-registry` check derives its machine input directly from the raw
+`machines` attrset rather than from the guest-only `vmSpecsJson`. It enforces:
+valid JSON, at least one entry, required fields present, a known `source`, safe
+`remote`/`checkout` values, no duplicate checkout paths within any machine,
+every machine-referenced alias defined, and the `allod/profiles`,
+`allod/secrets`, and `allod/inventory` aliases on both self-rebuild guests and
+every hypervisor. Mutation witnesses remove each required Nexus alias, add an
+unknown alias, and create a duplicate checkout path to prove those guards fail
+with the intended diagnostic. The public Nexus fixture is pinned to exactly
+`allod/nexus`, `allod/inventory`, `allod/secrets`, and `allod/profiles`; its
+declared delta adds only `allod/profiles` to the preceding fixture.
 
 ## Platform assertions
 
