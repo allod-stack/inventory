@@ -41,7 +41,7 @@
         # identity, so its machine set must contain a `nexus` entry for the
         # identity/machine assertion to hold. `vmSpecsJson` filters out
         # `type == "hypervisor"`, so this entry does not appear in
-        # scripts/vm-specs.json and does not affect inventory's own checks.
+        # scripts/vm-specs.json; repository validation still checks its repos.
         # Hypervisors are not guests: this entry deliberately carries no
         # `runtime` fact. Evaluation actively rejects a hypervisor that
         # declares one (see the `hypervisorWithRuntime` diagnostic below), so
@@ -343,7 +343,7 @@
                 echo "OK: removing required Nexus alias '$required_alias' fails with its pinned diagnostic"
               done
 
-              jq '.nexus.repos[0] = "fixture/unknown"' "$machines" > /tmp/unknown-alias.json
+              jq '.nexus.repos += ["fixture/unknown"]' "$machines" > /tmp/unknown-alias.json
               if validate_registry "$registry" /tmp/unknown-alias.json > /tmp/unknown-alias.log 2>&1; then
                 echo "ERROR: an unknown hypervisor alias still passed validation"
                 exit 1
@@ -378,8 +378,8 @@
           # reason" — see runtimeDiagnostics above for why that distinction
           # is load-bearing), that the real mkVmSpecsJson path actually
           # rejects every fixture, that a hypervisor cannot silently acquire
-          # a runtime, that the public examples cover both enum values, and
-          # that the vm-specs-json drift check is not vacuous.
+          # a runtime, that a synthetic guest accepts the microvm enum value,
+          # and that the vm-specs-json drift check is not vacuous.
           runtime-fact-mutations = pkgs.runCommand "runtime-fact-mutations-check"
             { nativeBuildInputs = [ pkgs.jq pkgs.diffutils ]; }
             (
@@ -398,6 +398,10 @@
 
                 machinesUnknownRuntime = machines // {
                   "allod-dev" = machines."allod-dev" // { runtime = "bhyve"; };
+                };
+
+                machinesMicrovm = machines // {
+                  "privacy-1" = machines."privacy-1" // { runtime = "microvm"; };
                 };
 
                 allFields = [ "hypervisorWithRuntime" "missingRuntime" "nonStringRuntime" "unknownRuntime" ];
@@ -431,6 +435,11 @@
                 validDiag = runtimeDiagnostics machines;
                 validHasNoDiagnostics = lib.all (f: validDiag.${f} == {}) allFields;
 
+                microvmResult = builtins.tryEval (
+                  (builtins.fromJSON (mkVmSpecsJson machinesMicrovm))."privacy-1".runtime == "microvm"
+                );
+                microvmAccepted = microvmResult.success && microvmResult.value;
+
                 b = v: if v then "true" else "false";
 
                 realJson = builtins.toFile "vm-specs.json" vmSpecsJson;
@@ -450,6 +459,7 @@
 
                 check "valid machines have no runtime diagnostics" true "${b validHasNoDiagnostics}"
                 check "valid machines evaluate"                    true "${b (!(rejects machines))}"
+                check "microvm runtime: accepted and survives mkVmSpecsJson" true "${b microvmAccepted}"
 
                 check "hypervisor-with-runtime: pinned to its own diagnostic" true "${b (pinnedTo "hypervisorWithRuntime" "nexus" machinesHypervisorWithRuntime)}"
                 check "hypervisor-with-runtime: fails mkVmSpecsJson"          true "${b (rejects machinesHypervisorWithRuntime)}"
@@ -509,7 +519,7 @@
                   exit 1
                 fi
 
-                echo "runtime-fact-mutations passed: valid data has no diagnostics, each sabotaged fixture is pinned to exactly the diagnostic it targets and fails the real mkVmSpecsJson path, hypervisor stays excluded, both public examples are present, and drift detection is proven"
+                echo "runtime-fact-mutations passed: valid data has no diagnostics, the synthetic microvm guest is accepted, each sabotaged fixture is pinned to exactly the diagnostic it targets and fails the real mkVmSpecsJson path, hypervisor stays excluded, and drift detection is proven"
                 touch "$out"
               ''
             );
