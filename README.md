@@ -154,13 +154,26 @@ with the intended diagnostic. The public Nexus fixture is pinned to exactly
 `allod/nexus`, `allod/inventory`, `allod/secrets`, and `allod/profiles`; its
 declared delta adds only `allod/profiles` to the preceding fixture.
 
-## Platform assertions
+## Shape assertions
 
-Evaluating the flake fails fast if:
+`type` and `platform` are what every other rule classifies on, so they are
+checked first. Evaluating the flake fails fast if:
 
+- a machine has no `type` — `inventory machines missing type: <names>`
+- a `type` is not a string — `inventory machines with non-string type: <names>`
 - a machine has no `platform` — `inventory machines missing platform: <names>`
 - a `platform` is not in `lib.systems.flakeExposed` —
   `inventory machines with invalid Nix system: <names>`
+
+These run inside the `mkVmSpecs` chain that `checkedMachines` forces, so a
+consumer reading `machines`/`lib.machines` triggers them. That matters because
+`archetypes` reads exactly that surface: platform validation used to hang off
+`lib.supportedPlatforms` alone, so a machine with no `platform` reached those
+consumers unvalidated and only failed later, somewhere less obvious.
+
+Inventory checks that `type` is present and a string; it does not check the
+value against a set of known archetypes. That set belongs to `archetypes`, which
+owns the builders and rejects a machine whose type has no builder.
 
 `lib.supportedPlatforms` is the deduplicated list of the surviving platforms and
 drives the per-system `checks` attribute set. `profiles` further asserts exactly
@@ -192,8 +205,11 @@ hypervisor stays excluded, that both public runtime examples exist, and that the
 
 Evaluating the flake fails fast for any `service` machine if:
 
-- `platform` is not `x86_64-linux` — `inventory service machines must declare
-  platform x86_64-linux (…): <names>`
+- `platform` is present and is not `x86_64-linux` — `inventory service machines
+  must declare platform x86_64-linux (…): <names>`. A service machine with no
+  `platform` at all trips `missingPlatform` instead, which names the actual
+  problem; the `runtime-fact-mutations` check pins that case so the guard cannot
+  quietly become a hole.
 - any of `memory_mb`, `vcpus`, `disk_gb`, `mac` is present — `inventory service
   machines must not declare guest sizing fields (…): <names>`
 

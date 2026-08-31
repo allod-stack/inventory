@@ -94,23 +94,18 @@
         };
       };
 
-      missingPlatforms =
-        lib.filterAttrs (_: m: !(m ? platform)) machines;
-
-      platformMachines =
-        assert lib.assertMsg (missingPlatforms == {})
-          "inventory machines missing platform: ${lib.concatStringsSep ", " (builtins.attrNames missingPlatforms)}";
-        machines;
-
-      invalidPlatforms =
-        lib.filterAttrs
-          (_: m: !(builtins.elem m.platform lib.systems.flakeExposed))
-          platformMachines;
-
+      # Platform validation reads its diagnostics from the same parameterized
+      # classifier every other rule uses, and asserts them inside mkVmSpecs so
+      # `checkedMachines` forces them. It used to be a separate chain forced
+      # only by `supportedPlatforms`, which meant a consumer reading
+      # `machines`/`lib.machines` — the surface `archetypes` actually
+      # consumes — could receive a machine with no `platform` at all, because
+      # nothing on that path ever evaluated the assertion. The names below are
+      # kept so this file still reads top-to-bottom, but the work now happens
+      # once, in the chain everything forces.
       supportedPlatforms =
-        assert lib.assertMsg (invalidPlatforms == {})
-          "inventory machines with invalid Nix system: ${lib.concatStringsSep ", " (builtins.attrNames invalidPlatforms)}";
-        lib.unique (map (m: m.platform) (builtins.attrValues platformMachines));
+        builtins.seq (mkVmSpecs machines)
+          (lib.unique (map (m: m.platform) (builtins.attrValues machines)));
 
       validRuntimes = [ "libvirt" "microvm" ];
 
@@ -178,10 +173,33 @@
       # the source, rather than papering over it in the check.
       machineDiagnostics = ms:
         let
-          runtimeFree = lib.filterAttrs (_: m: isRuntimeFree m) ms;
-          vms = lib.filterAttrs (_: m: !(isRuntimeFree m)) ms;
-          services = lib.filterAttrs (_: m: m.type == "service") ms;
+          # `type` is classified before anything reads it, so this function
+          # keeps the "pure, non-throwing" property it claims. Without these
+          # two guards a machine with no `type` aborted with a raw
+          # `attribute 'type' missing` inside `isRuntimeFree` — an error
+          # `builtins.tryEval` cannot even catch, so no fixture could pin it.
+          typed = lib.filterAttrs (_: m: (m ? type) && builtins.isString m.type) ms;
+
+          runtimeFree = lib.filterAttrs (_: m: isRuntimeFree m) typed;
+          vms = lib.filterAttrs (_: m: !(isRuntimeFree m)) typed;
+          services = lib.filterAttrs (_: m: m.type == "service") typed;
         in {
+          missingType = lib.filterAttrs (_: m: !(m ? type)) ms;
+          nonStringType =
+            lib.filterAttrs (_: m: (m ? type) && !(builtins.isString m.type)) ms;
+
+          # Platform presence and validity, in the classifier rather than in a
+          # chain of their own, so mkVmSpecs can assert them and every consumer
+          # that forces `machines` gets them. Guarded in the same style as the
+          # runtime predicates: a machine with no platform trips exactly
+          # `missingPlatform`, never also `invalidPlatform`.
+          missingPlatform = lib.filterAttrs (_: m: !(m ? platform)) ms;
+          invalidPlatform =
+            lib.filterAttrs
+              (_: m: (m ? platform)
+                     && !(builtins.elem m.platform lib.systems.flakeExposed))
+              ms;
+
           runtimeFreeWithRuntime = lib.filterAttrs (_: m: m ? runtime) runtimeFree;
           missingRuntime = lib.filterAttrs (_: m: !(m ? runtime)) vms;
           nonStringRuntime =
@@ -210,15 +228,36 @@
         let
           diag = machineDiagnostics ms;
 
-          # The service-shape rules run first and return `ms` unchanged, so
-          # they are part of the same chain every consumer already forces
-          # rather than a second trip-wire someone has to remember to touch.
+          # Shape before meaning: `type` and `platform` are what every rule
+          # below classifies on, so a machine that is wrong about either is
+          # told that rather than being reported as the wrong kind of problem.
+          # Returns `ms` unchanged — these are trip-wires, not a transform.
+          machineShape =
+            assert lib.assertMsg (diag.missingType == {})
+              "inventory machines missing type: ${lib.concatStringsSep ", " (builtins.attrNames diag.missingType)}";
+            assert lib.assertMsg (diag.nonStringType == {})
+              "inventory machines with non-string type: ${lib.concatStringsSep ", " (builtins.attrNames diag.nonStringType)}";
+            assert lib.assertMsg (diag.missingPlatform == {})
+              "inventory machines missing platform: ${lib.concatStringsSep ", " (builtins.attrNames diag.missingPlatform)}";
+            assert lib.assertMsg (diag.invalidPlatform == {})
+              "inventory machines with invalid Nix system: ${lib.concatStringsSep ", " (builtins.attrNames diag.invalidPlatform)}";
+            ms;
+
+          # The service-shape rules return `ms` unchanged for the same reason.
+          #
+          # Nix evaluates a let-binding's asserts when the binding is forced,
+          # and `runtimeDeclared` below asserts before it forces `serviceShape`
+          # — so for a machine that is wrong in two ways at once, the runtime
+          # message is the one reported. Every fixture declares exactly one
+          # problem, which is what the disjointness argument above buys, so
+          # nothing depends on this order; it is recorded because an earlier
+          # version of this comment claimed the opposite.
           serviceShape =
             assert lib.assertMsg (diag.serviceForeignPlatform == {})
               "inventory service machines must declare platform ${servicePlatform} (nothing in this fleet has ever built for another chip; open the door once a cross-architecture build path exists): ${lib.concatStringsSep ", " (builtins.attrNames diag.serviceForeignPlatform)}";
             assert lib.assertMsg (diag.serviceGuestSizing == {})
               "inventory service machines must not declare guest sizing fields (${lib.concatStringsSep ", " serviceGuestFields}); a rented machine's size is what is being paid for, not an instruction anything here acts on: ${lib.concatStringsSep ", " (builtins.attrNames diag.serviceGuestSizing)}";
-            ms;
+            machineShape;
 
           runtimeDeclared =
             assert lib.assertMsg (diag.runtimeFreeWithRuntime == {})
@@ -271,14 +310,13 @@
       # disjointness argument in one place rather than in two copies that can
       # disagree about which diagnostics exist.
 
-      diagnosticFields = [
-        "runtimeFreeWithRuntime"
-        "missingRuntime"
-        "nonStringRuntime"
-        "unknownRuntime"
-        "serviceForeignPlatform"
-        "serviceGuestSizing"
-      ];
+      # Derived from the classifier rather than written out beside it. A
+      # hand-maintained list here is a second registry of diagnostics that
+      # nothing validates: add a diagnostic to `machineDiagnostics`, forget to
+      # add its name here, and `pinnedTo` stops looking at it — so a fixture
+      # that trips two diagnostics still reports as pinned to one. Reading the
+      # names off an empty machine set costs nothing and cannot drift.
+      diagnosticFields = builtins.attrNames (machineDiagnostics { });
 
       # True only if fixture `ms` trips exactly `field` (naming `machine`)
       # among the diagnostics, and none of the others. This is the actual fix
@@ -561,6 +599,33 @@
                   "privacy-1" = machines."privacy-1" // { runtime = "microvm"; };
                 };
 
+                # The shape fixtures. `type` and `platform` are what every
+                # other rule classifies on, so each needs its own witness or
+                # the classifier's guards are asserted about nothing.
+                machinesMissingType = machines // {
+                  "privacy-1" = builtins.removeAttrs machines."privacy-1" [ "type" ];
+                };
+
+                machinesNonStringType = machines // {
+                  "privacy-1" = machines."privacy-1" // { type = 42; };
+                };
+
+                machinesMissingPlatform = machines // {
+                  "privacy-1" = builtins.removeAttrs machines."privacy-1" [ "platform" ];
+                };
+
+                machinesInvalidPlatform = machines // {
+                  "privacy-1" = machines."privacy-1" // { platform = "not-a-nix-system"; };
+                };
+
+                # A service machine with no platform at all. This is the case
+                # the serviceForeignPlatform guard deliberately declines: it
+                # belongs to `missingPlatform`, which names the actual problem,
+                # rather than being reported as a machine on the wrong chip.
+                machinesServiceMissingPlatform = machines // {
+                  "service-1" = builtins.removeAttrs serviceFixture [ "platform" ];
+                };
+
                 validDiag = machineDiagnostics machines;
                 validHasNoDiagnostics = lib.all (f: validDiag.${f} == {}) diagnosticFields;
 
@@ -594,6 +659,25 @@
 
                 check "unknown runtime: pinned to its own diagnostic" true "${b (pinnedTo "unknownRuntime" "allod-dev" machinesUnknownRuntime)}"
                 check "unknown runtime: fails mkVmSpecsJson"          true "${b (rejects machinesUnknownRuntime)}"
+
+                check "missing type: pinned to its own diagnostic" true "${b (pinnedTo "missingType" "privacy-1" machinesMissingType)}"
+                check "missing type: fails mkVmSpecsJson"          true "${b (rejects machinesMissingType)}"
+
+                check "non-string type: pinned to its own diagnostic" true "${b (pinnedTo "nonStringType" "privacy-1" machinesNonStringType)}"
+                check "non-string type: fails mkVmSpecsJson"          true "${b (rejects machinesNonStringType)}"
+
+                check "missing platform: pinned to its own diagnostic" true "${b (pinnedTo "missingPlatform" "privacy-1" machinesMissingPlatform)}"
+                check "missing platform: fails mkVmSpecsJson"          true "${b (rejects machinesMissingPlatform)}"
+
+                check "invalid platform: pinned to its own diagnostic" true "${b (pinnedTo "invalidPlatform" "privacy-1" machinesInvalidPlatform)}"
+                check "invalid platform: fails mkVmSpecsJson"          true "${b (rejects machinesInvalidPlatform)}"
+
+                # A platform-less service machine is the missing-platform
+                # problem, not the foreign-platform one. Pinning it here is
+                # what stops the serviceForeignPlatform guard from quietly
+                # letting such a machine through the whole chain.
+                check "service with no platform: pinned to missingPlatform" true "${b (pinnedTo "missingPlatform" "service-1" machinesServiceMissingPlatform)}"
+                check "service with no platform: fails mkVmSpecsJson"       true "${b (rejects machinesServiceMissingPlatform)}"
 
                 if jq -e 'has("nexus")' ${realJson} >/dev/null; then
                   echo "ERROR: hypervisor entry 'nexus' leaked into vmSpecsJson (must not acquire a fake guest runtime)"
@@ -716,7 +800,13 @@
 
                 # Ties the production list to the fixtures below, so a field
                 # deleted from the rule cannot also delete its own witness.
-                check "guest sizing field list is exactly what this check covers" true "${b (serviceGuestFields == expectedGuestFields)}"
+                # Compared as sets: the rule refuses any field in the list, so
+                # its order is not a property worth pinning, and a check that
+                # pinned it would go red for a reordering that changes nothing.
+                check "guest sizing field list is exactly what this check covers" true "${
+                  b (lib.sort (a: c: a < c) serviceGuestFields
+                     == lib.sort (a: c: a < c) expectedGuestFields)
+                }"
 
                 ${lib.concatMapStrings (fixture: ''
                   check "guest sizing field ${fixture.field}: pinned to its own diagnostic" true "${b (pinnedTo "serviceGuestSizing" "service-1" fixture.ms)}"
@@ -740,6 +830,17 @@
       lib = {
         machines = checkedMachines;
         inherit supportedPlatforms vmSpecsJson;
+
+        # Which machines are guests of this fleet, exported because the answer
+        # is a machine fact and this repo owns machine facts (architecture
+        # principle 8). `archetypes` needs the same split in at least three
+        # places — vmFacts, the runtime-module selection check, and its own
+        # builders — and every copy of the list is a copy that can be left
+        # behind when a fourth runtime-free type appears. That is not
+        # hypothetical: the hypervisor-only form of this predicate was already
+        # stale in one archetypes check when `service` was added.
+        inherit runtimeFreeTypes;
+        isGuestMachine = m: !(isRuntimeFree m);
       };
 
       checks = lib.genAttrs supportedPlatforms mkChecks;
