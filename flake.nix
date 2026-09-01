@@ -840,7 +840,20 @@
         # hypothetical: the hypervisor-only form of this predicate was already
         # stale in one archetypes check when `service` was added.
         inherit runtimeFreeTypes;
-        isGuestMachine = m: !(isRuntimeFree m);
+
+        # Named errors rather than the raw `attribute 'type' missing` that
+        # `isRuntimeFree` would raise on its own. `machineDiagnostics` was made
+        # non-throwing on exactly this input, and an export that still threw
+        # rawly would be the same defect wearing a different hat — worse, in
+        # fact, because a raw attribute error is one `builtins.tryEval` cannot
+        # catch, so a consumer could not even probe it.
+        isGuestMachine = m:
+          if !(m ? type) then
+            throw "inventory lib.isGuestMachine: machine has no type"
+          else if !(builtins.isString m.type) then
+            throw "inventory lib.isGuestMachine: machine type must be a string"
+          else
+            !(isRuntimeFree m);
       };
 
       checks = lib.genAttrs supportedPlatforms mkChecks;
