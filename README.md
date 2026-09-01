@@ -33,6 +33,8 @@ This repo does **not** own:
 | `machines` | attrset | raw machine definitions, keyed by machine name |
 | `lib.machines` | attrset | the same machine set, re-exported under `lib` |
 | `lib.supportedPlatforms` | list of string | unique Nix systems across all machines (asserted valid) |
+| `lib.runtimeFreeTypes` | list of string | machine types that carry no `runtime` — `hypervisor` and `service` |
+| `lib.isGuestMachine` | machine -> bool | whether a machine is a guest this fleet provisions. Throws a named, catchable error on a machine with a missing or non-string `type` |
 | `lib.vmSpecsJson` | JSON string | VM-facing specs (hypervisor and service machines excluded), serialized to JSON |
 | `checks.<system>.vm-specs-json` | derivation | fails if `scripts/vm-specs.json` diverges from `lib.vmSpecsJson` |
 | `checks.<system>.repository-registry` | derivation | validates `scripts/repositories.json` against every raw machine, including hypervisors, and proves its required-alias guards fail under sabotage |
@@ -164,6 +166,13 @@ checked first. Evaluating the flake fails fast if:
 - a machine has no `platform` — `inventory machines missing platform: <names>`
 - a `platform` is not in `lib.systems.flakeExposed` —
   `inventory machines with invalid Nix system: <names>`
+
+These run first, before the service and runtime rules, so a machine that is wrong
+about `type` or `platform` is told that rather than being reported as the wrong
+kind of problem. The order is produced by an explicit `builtins.seq` chain at the
+end of `mkVmSpecs` rather than by the order the bindings are written in — a
+let-binding's assertions fire when the binding is *forced*, which is not the same
+thing, and getting that wrong once made the shape rules evaluate last.
 
 These run inside the `mkVmSpecs` chain that `checkedMachines` forces, so a
 consumer reading `machines`/`lib.machines` triggers them. That matters because

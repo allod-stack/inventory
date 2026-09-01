@@ -127,6 +127,25 @@
 
       isRuntimeFree = m: builtins.elem m.type runtimeFreeTypes;
 
+      # The exported form of the same question, and the one consumers get.
+      # Hoisted into this `let` rather than written inline in the `lib` output
+      # so the interface witness below drives exactly the value `archetypes`
+      # will call, not a second copy that could agree with itself.
+      #
+      # Named errors rather than the raw `attribute 'type' missing` that
+      # `isRuntimeFree` raises on its own. `machineDiagnostics` was made
+      # non-throwing on exactly this input, and an export that still threw
+      # rawly would be the same defect wearing a different hat — worse, in
+      # fact, because a raw attribute error is one `builtins.tryEval` cannot
+      # catch, so a consumer could not even probe it.
+      isGuestMachine = m:
+        if !(m ? type) then
+          throw "inventory lib.isGuestMachine: machine has no type"
+        else if !(builtins.isString m.type) then
+          throw "inventory lib.isGuestMachine: machine type must be a string"
+        else
+          !(isRuntimeFree m);
+
       # The one platform a service machine may declare. `platform` is the
       # chip-and-operating-system pair the build targets and says nothing about
       # who hosts the machine, so `lib.systems.flakeExposed` would accept ARM
@@ -210,9 +229,10 @@
               vms;
 
           # Guarded on `m ? platform` so a service machine carrying no platform
-          # at all trips the platform-presence assertion above, which names
-          # that problem, rather than being reported here as the wrong shape of
-          # problem.
+          # at all trips `missingPlatform`, which names that problem, rather
+          # than being reported here as the wrong shape of problem. `mkVmSpecs`
+          # forces the shape rules before this one, so that is what a reader of
+          # the error actually gets.
           serviceForeignPlatform =
             lib.filterAttrs (_: m: (m ? platform) && m.platform != servicePlatform) services;
 
@@ -231,7 +251,15 @@
           # Shape before meaning: `type` and `platform` are what every rule
           # below classifies on, so a machine that is wrong about either is
           # told that rather than being reported as the wrong kind of problem.
-          # Returns `ms` unchanged — these are trip-wires, not a transform.
+          #
+          # The ordering is produced by the explicit `builtins.seq` chain at the
+          # end of this function, not by the order these bindings are written
+          # in. That distinction is load-bearing and was got wrong once: a
+          # let-binding's asserts fire when the binding is *forced*, so
+          # threading `machineShape` through as `serviceShape`'s return value
+          # made it the LAST thing evaluated, and a machine missing both
+          # `platform` and `runtime` reported the runtime problem. The chain
+          # below states the order in the order it happens.
           machineShape =
             assert lib.assertMsg (diag.missingType == {})
               "inventory machines missing type: ${lib.concatStringsSep ", " (builtins.attrNames diag.missingType)}";
@@ -243,37 +271,29 @@
               "inventory machines with invalid Nix system: ${lib.concatStringsSep ", " (builtins.attrNames diag.invalidPlatform)}";
             ms;
 
-          # The service-shape rules return `ms` unchanged for the same reason.
-          #
-          # Nix evaluates a let-binding's asserts when the binding is forced,
-          # and `runtimeDeclared` below asserts before it forces `serviceShape`
-          # — so for a machine that is wrong in two ways at once, the runtime
-          # message is the one reported. Every fixture declares exactly one
-          # problem, which is what the disjointness argument above buys, so
-          # nothing depends on this order; it is recorded because an earlier
-          # version of this comment claimed the opposite.
           serviceShape =
             assert lib.assertMsg (diag.serviceForeignPlatform == {})
               "inventory service machines must declare platform ${servicePlatform} (nothing in this fleet has ever built for another chip; open the door once a cross-architecture build path exists): ${lib.concatStringsSep ", " (builtins.attrNames diag.serviceForeignPlatform)}";
             assert lib.assertMsg (diag.serviceGuestSizing == {})
               "inventory service machines must not declare guest sizing fields (${lib.concatStringsSep ", " serviceGuestFields}); a rented machine's size is what is being paid for, not an instruction anything here acts on: ${lib.concatStringsSep ", " (builtins.attrNames diag.serviceGuestSizing)}";
-            machineShape;
+            true;
 
-          runtimeDeclared =
+          runtimeShape =
             assert lib.assertMsg (diag.runtimeFreeWithRuntime == {})
               "inventory ${lib.concatStringsSep " and " runtimeFreeTypes} machines must not declare runtime: ${lib.concatStringsSep ", " (builtins.attrNames diag.runtimeFreeWithRuntime)}";
             assert lib.assertMsg (diag.missingRuntime == {})
               "inventory machines missing runtime: ${lib.concatStringsSep ", " (builtins.attrNames diag.missingRuntime)}";
-            lib.filterAttrs (_: m: !(isRuntimeFree m)) serviceShape;
-
-          stringRuntime =
             assert lib.assertMsg (diag.nonStringRuntime == {})
               "inventory machines with non-string runtime: ${lib.concatStringsSep ", " (builtins.attrNames diag.nonStringRuntime)}";
-            runtimeDeclared;
+            assert lib.assertMsg (diag.unknownRuntime == {})
+              "inventory machines with unknown runtime (expected one of: ${lib.concatStringsSep ", " validRuntimes}): ${lib.concatStringsSep ", " (builtins.attrNames diag.unknownRuntime)}";
+            true;
         in
-        assert lib.assertMsg (diag.unknownRuntime == {})
-          "inventory machines with unknown runtime (expected one of: ${lib.concatStringsSep ", " validRuntimes}): ${lib.concatStringsSep ", " (builtins.attrNames diag.unknownRuntime)}";
-        stringRuntime;
+        # The order, stated once and enforced by forcing rather than by layout.
+        builtins.seq machineShape
+          (builtins.seq serviceShape
+            (builtins.seq runtimeShape
+              (lib.filterAttrs (_: m: !(isRuntimeFree m)) ms)));
 
       mkVmSpecsJson = ms: builtins.toJSON (lib.mapAttrs (name: m: {
         inherit (m) memory_mb vcpus disk_gb ip mac forge_key repos runtime;
@@ -795,6 +815,24 @@
                 # guests; a rented host is neither sized nor started here.
                 check "service machine absent from vmSpecsJson" true "${b serviceAbsentFromSpecs}"
 
+                # The exported classification. Without these lines the export
+                # had no witness at all: replacing it with `_: true` left both
+                # mutation checks green, because nothing in this repo consumes
+                # it — `archetypes` does. An exported interface that no check
+                # can be shown to fail on is exactly what principle 11 refuses,
+                # and the fact that its only consumers are in another repo is
+                # the reason it needs a witness here rather than the reason it
+                # does not.
+                check "exported: a dev machine is a guest"        true  "${b (isGuestMachine { type = "dev"; })}"
+                check "exported: a privacy machine is a guest"    true  "${b (isGuestMachine { type = "privacy"; })}"
+                check "exported: a service machine is not"        false "${b (isGuestMachine { type = "service"; })}"
+                check "exported: a hypervisor is not"             false "${b (isGuestMachine { type = "hypervisor"; })}"
+                check "exported: no type is a catchable error"    false "${b (builtins.tryEval (isGuestMachine { })).success}"
+                check "exported: non-string type is catchable"    false "${b (builtins.tryEval (isGuestMachine { type = 42; })).success}"
+                check "exported: runtimeFreeTypes matches the rule" true "${
+                  b (lib.sort (a: c: a < c) runtimeFreeTypes == [ "hypervisor" "service" ])
+                }"
+
                 check "foreign platform: pinned to its own diagnostic" true "${b (pinnedTo "serviceForeignPlatform" "service-1" machinesForeignPlatform)}"
                 check "foreign platform: fails mkVmSpecsJson"          true "${b (rejects machinesForeignPlatform)}"
 
@@ -839,21 +877,7 @@
         # behind when a fourth runtime-free type appears. That is not
         # hypothetical: the hypervisor-only form of this predicate was already
         # stale in one archetypes check when `service` was added.
-        inherit runtimeFreeTypes;
-
-        # Named errors rather than the raw `attribute 'type' missing` that
-        # `isRuntimeFree` would raise on its own. `machineDiagnostics` was made
-        # non-throwing on exactly this input, and an export that still threw
-        # rawly would be the same defect wearing a different hat — worse, in
-        # fact, because a raw attribute error is one `builtins.tryEval` cannot
-        # catch, so a consumer could not even probe it.
-        isGuestMachine = m:
-          if !(m ? type) then
-            throw "inventory lib.isGuestMachine: machine has no type"
-          else if !(builtins.isString m.type) then
-            throw "inventory lib.isGuestMachine: machine type must be a string"
-          else
-            !(isRuntimeFree m);
+        inherit runtimeFreeTypes isGuestMachine;
       };
 
       checks = lib.genAttrs supportedPlatforms mkChecks;
