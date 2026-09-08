@@ -57,7 +57,7 @@ Each entry in `machines` is an attrset:
 |---|---|---|
 | `platform` | string | Nix system, e.g. `x86_64-linux`; required — asserted present and valid |
 | `type` | string | `dev`, `privacy`, or `hypervisor` |
-| `runtime` | string | `libvirt` or `microvm`; required for non-hypervisor machines — asserted present, a string, and a known value; hypervisor machines carry no `runtime`, and declaring one is an error |
+| `runtime` | string | `libvirt`, the one guest runtime; required for non-hypervisor machines — asserted present, a string, and a known value; hypervisor machines carry no `runtime`, and declaring one is an error |
 | `memory_mb` | int | RAM |
 | `vcpus` | int | vCPU count |
 | `disk_gb` | int | root disk size |
@@ -70,9 +70,7 @@ Each entry in `machines` is an attrset:
 
 Example machines shipped in the template: `allod-dev` (`dev`,
 `runtime = "libvirt"`), `privacy-1` (`privacy`, `runtime = "libvirt"`), and
-`nexus` (`hypervisor`, no `runtime`). The microvm enum path is covered by a
-mutation fixture rather than a machine that cannot build without matching
-private identity and profile data. The `nexus` entry is present because
+`nexus` (`hypervisor`, no `runtime`). The `nexus` entry is present because
 `profiles` always injects a `nexus` identity and asserts a matching machine;
 its `hardware` attr is illustrative and meant to be replaced with a real
 generated hardware config.
@@ -156,8 +154,8 @@ not `hypervisor` — if:
 
 - `runtime` is missing — `inventory machines missing runtime: <names>`
 - `runtime` is not a string — `inventory machines with non-string runtime: <names>`
-- `runtime` is not `libvirt` or `microvm` — `inventory machines with unknown
-  runtime (expected one of: libvirt, microvm): <names>`
+- `runtime` is not `libvirt` — `inventory machines with unknown
+  runtime (expected one of: libvirt): <names>`
 
 and for a hypervisor that declares one anyway —
 `inventory hypervisor machines must not declare runtime: <names>`.

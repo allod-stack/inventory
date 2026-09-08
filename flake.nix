@@ -10,10 +10,7 @@
       lib = nixpkgs.lib;
 
       machines = {
-        # The operator's own development machine. It stays on libvirt: a dev
-        # guest that fails to boot takes its own repair environment with it, so
-        # the machine the work happens from is the last to move onto a new
-        # runtime, not the first.
+        # The operator's own development machine.
         allod-dev = {
           platform = "x86_64-linux";
           type = "dev";
@@ -27,15 +24,6 @@
           self_rebuild = false;
           repos = [ "allod/tools" "allod/strategy" "allod/secrets" "allod/inventory" "allod/memory" "allod/archetypes" "allod/profiles" "allod/vm" "allod/nexus" "allod/deploy" ];
         };
-
-        # The microvm example machine is deliberately absent until it exists.
-        # A machine entry is not self-contained: adding one requires a matching
-        # identity, a profile, and per-machine encrypted credentials, and
-        # creating those needs a host key generated on the host. So the machine
-        # that first selects the microvm runtime is added in the same change
-        # that provisions it, rather than sitting here as data nothing can
-        # build. The runtime enum's microvm branch is covered by the mutation
-        # fixtures below, not by an example machine.
 
         # Synthetic hypervisor example. `profiles` always injects a `nexus`
         # identity, so its machine set must contain a `nexus` entry for the
@@ -79,9 +67,6 @@
         privacy-1 = {
           platform = "x86_64-linux";
           type = "privacy";
-          # Public libvirt example: this arc keeps the privacy VM on the
-          # existing libvirt XML/Tor topology, so libvirt stays a tested,
-          # first-class runtime path alongside microvm.
           runtime = "libvirt";
           memory_mb = 4096;
           vcpus = 2;
@@ -107,7 +92,7 @@
         builtins.seq (mkVmSpecs machines)
           (lib.unique (map (m: m.platform) (builtins.attrValues machines)));
 
-      validRuntimes = [ "libvirt" "microvm" ];
+      validRuntimes = [ "libvirt" ];
 
       # Machine types that are not guests of this fleet and therefore carry no
       # `runtime` fact at all. A hypervisor is the only one: it is the machine
@@ -138,7 +123,7 @@
       # earlier, unguarded version computed `nonStringRuntime` and
       # `unknownRuntime` by re-filtering whatever the previous stage let
       # through, so `runtime = 42` failed `isString` but *also* failed
-      # `builtins.elem 42 [ "libvirt" "microvm" ]` (Nix's `==` across types
+      # `builtins.elem 42 validRuntimes` (Nix's `==` across types
       # is false, not a type error). A check that only asked "did evaluation
       # fail" could not tell those two apart, and deleting the non-string
       # assertion entirely left it green because the unknown-runtime
@@ -497,8 +482,8 @@
           # reason" — see machineDiagnostics above for why that distinction
           # is load-bearing), that the real mkVmSpecsJson path actually
           # rejects every fixture, that neither runtime-free type can silently
-          # acquire a runtime, that a synthetic guest accepts the microvm enum
-          # value, and that the vm-specs-json drift check is not vacuous.
+          # acquire a runtime, and that the vm-specs-json drift check is not
+          # vacuous.
           #
           # The name is narrower than the diagnostic set it now shares with
           # its name, and stays that way on purpose:
@@ -510,8 +495,10 @@
             { nativeBuildInputs = [ pkgs.jq pkgs.diffutils ]; }
             (
               let
+                # A valid enum member on the one type that must not carry the
+                # fact, so only the runtime-free diagnostic can reject it.
                 machinesHypervisorWithRuntime = machines // {
-                  nexus = machines.nexus // { runtime = "microvm"; };
+                  nexus = machines.nexus // { runtime = "libvirt"; };
                 };
 
                 machinesMissingRuntime = machines // {
@@ -524,10 +511,6 @@
 
                 machinesUnknownRuntime = machines // {
                   "allod-dev" = machines."allod-dev" // { runtime = "bhyve"; };
-                };
-
-                machinesMicrovm = machines // {
-                  "privacy-1" = machines."privacy-1" // { runtime = "microvm"; };
                 };
 
                 # The shape fixtures. `type` and `platform` are what every
@@ -552,11 +535,6 @@
                 validDiag = machineDiagnostics machines;
                 validHasNoDiagnostics = lib.all (f: validDiag.${f} == {}) diagnosticFields;
 
-                microvmResult = builtins.tryEval (
-                  (builtins.fromJSON (mkVmSpecsJson machinesMicrovm))."privacy-1".runtime == "microvm"
-                );
-                microvmAccepted = microvmResult.success && microvmResult.value;
-
                 b = boolLiteral;
 
                 realJson = builtins.toFile "vm-specs.json" vmSpecsJson;
@@ -566,7 +544,6 @@
 
                 check "valid machines have no diagnostics"        true "${b validHasNoDiagnostics}"
                 check "valid machines evaluate"                   true "${b (accepts machines)}"
-                check "microvm runtime: accepted and survives mkVmSpecsJson" true "${b microvmAccepted}"
 
                 check "hypervisor-with-runtime: pinned to its own diagnostic" true "${b (pinnedTo "runtimeFreeWithRuntime" "nexus" machinesHypervisorWithRuntime)}"
                 check "hypervisor-with-runtime: fails mkVmSpecsJson"          true "${b (rejects machinesHypervisorWithRuntime)}"
@@ -599,23 +576,6 @@
                   echo "OK: hypervisor entry 'nexus' absent from vmSpecsJson"
                 fi
 
-                # The machine the operator develops from is the last to move,
-                # not the first. A dev guest that fails to boot takes its own
-                # repair environment with it.
-                if ! jq -e '.["allod-dev"].runtime == "libvirt"' ${realJson} >/dev/null; then
-                  echo "ERROR: allod-dev must stay on libvirt; the first microvm selection is a purpose-made machine"
-                  errors=$((errors + 1))
-                else
-                  echo "OK: allod-dev stays on libvirt"
-                fi
-
-                if ! jq -e '.["privacy-1"].runtime == "libvirt"' ${realJson} >/dev/null; then
-                  echo "ERROR: privacy-1 is no longer the public libvirt example"
-                  errors=$((errors + 1))
-                else
-                  echo "OK: privacy-1 is the public libvirt example"
-                fi
-
                 # Prove the vm-specs-json drift check is not vacuous: mutate a
                 # copy of the committed file and confirm the same key-sorted
                 # diff idiom it runs actually disagrees.
@@ -638,7 +598,7 @@
                   exit 1
                 fi
 
-                echo "runtime-fact-mutations passed: valid data has no diagnostics, the synthetic microvm guest is accepted, each sabotaged fixture is pinned to exactly the diagnostic it targets and fails the real mkVmSpecsJson path, hypervisor stays excluded, and drift detection is proven"
+                echo "runtime-fact-mutations passed: valid data has no diagnostics, each sabotaged fixture is pinned to exactly the diagnostic it targets and fails the real mkVmSpecsJson path, hypervisor stays excluded, and drift detection is proven"
                 touch "$out"
               ''
             );
