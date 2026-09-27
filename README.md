@@ -100,6 +100,7 @@ Each alias resolves to:
 | `source` | `forge` or `git` |
 | `remote` | path/URL on the source (rejected if it contains whitespace, `..`, or a leading/trailing `/`) |
 | `checkout` | workspace-relative checkout path (same safety constraints) |
+| `preview_port` | optional; its presence means the repository is a site `allod site preview` can serve. An integer from 1024 to 65535, unique across the registry |
 
 A machine's `repos` list references these aliases; host scripts (`nexus`)
 resolve an alias to its `remote`/`checkout` when cloning a machine's workspace.
@@ -107,11 +108,15 @@ The `repository-registry` check derives its machine input directly from the raw
 `machines` attrset rather than from the guest-only `vmSpecsJson`. It enforces:
 valid JSON, at least one entry, required fields present, a known `source`, safe
 `remote`/`checkout` values, no duplicate checkout paths within any machine,
-every machine-referenced alias defined, and the `allod/profiles`,
-`allod/secrets`, and `allod/inventory` aliases on both self-rebuild guests and
-every hypervisor. Mutation witnesses remove each required Nexus alias, add an
-unknown alias, and create a duplicate checkout path to prove those guards fail
-with the intended diagnostic. The public Nexus fixture is pinned to exactly
+every machine-referenced alias defined, a `preview_port` that is an integer from
+1024 to 65535 and unique across the registry wherever the field is present, and
+the `allod/profiles`, `allod/secrets`, and `allod/inventory` aliases on both
+self-rebuild guests and every hypervisor. Mutation witnesses remove each
+required Nexus alias, add an unknown alias, create a duplicate checkout path,
+give a fixture site an out-of-range `preview_port`, and give two fixture sites
+the same one, to prove those guards fail with the intended diagnostic; a third
+fixture site with a valid `preview_port` runs the accepting path, which the real
+registry does not. The public Nexus fixture is pinned to exactly
 `allod/nexus`, `allod/inventory`, `allod/secrets`, and `allod/profiles`; its
 declared delta adds only `allod/profiles` to the preceding fixture.
 

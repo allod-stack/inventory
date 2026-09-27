@@ -336,6 +336,7 @@
                 local errors=0
                 local count
                 local alias source remote checkout machine repo_alias dupes machine_type self_rebuild required_alias
+                local preview_port duplicate_port
 
                 if ! jq empty "$candidate_registry"; then
                   echo "ERROR: repositories.json is not valid JSON"
@@ -373,7 +374,30 @@
                     echo "ERROR: $alias: unsafe checkout value '$checkout'"
                     errors=$((errors + 1))
                   fi
+
+                  if jq -e --arg a "$alias" '.repositories[$a] | has("preview_port")' \
+                      "$candidate_registry" >/dev/null; then
+                    preview_port=$(jq -r --arg a "$alias" '.repositories[$a].preview_port | tojson' \
+                      "$candidate_registry")
+                    if ! jq -e --arg a "$alias" '.repositories[$a].preview_port
+                        | (type == "number") and (floor == .) and . >= 1024 and . <= 65535' \
+                        "$candidate_registry" >/dev/null; then
+                      echo "ERROR: $alias: preview_port $preview_port is not an integer from 1024 to 65535"
+                      errors=$((errors + 1))
+                    fi
+                  fi
                 done < <(jq -r '.repositories | keys[]' "$candidate_registry")
+
+                duplicate_port=$(jq -r '[ .repositories | to_entries[]
+                                          | select(.value | has("preview_port"))
+                                          | { port: .value.preview_port, alias: .key } ]
+                                        | group_by(.port) | map(select(length > 1)) | .[0] // empty
+                                        | ((.[0].port | tojson) + ": "
+                                           + (map(.alias) | sort | join(", ")))' "$candidate_registry")
+                if [ -n "$duplicate_port" ]; then
+                  echo "ERROR: duplicate preview_port $duplicate_port"
+                  errors=$((errors + 1))
+                fi
 
                 while IFS= read -r machine; do
                   while IFS= read -r repo_alias; do
@@ -472,6 +496,46 @@
                 exit 1
               fi
               echo "OK: duplicate hypervisor checkout paths fail with a pinned diagnostic"
+
+              with_site() {
+                jq --arg alias "$1" --argjson port "$2" \
+                  '.repositories[$alias] = { source: "forge", remote: $alias, checkout: $alias, preview_port: $port }'
+              }
+
+              with_site fixture/site-a null < "$registry" > /tmp/invalid-port-registry.json
+              if validate_registry /tmp/invalid-port-registry.json "$machines" > /tmp/invalid-port.log 2>&1; then
+                echo "ERROR: a preview_port outside 1024-65535 still passed validation"
+                exit 1
+              fi
+              if ! grep -F 'fixture/site-a: preview_port null is not an integer from 1024 to 65535' \
+                  /tmp/invalid-port.log >/dev/null; then
+                echo "ERROR: invalid preview_port sabotage failed for an unexpected reason"
+                cat /tmp/invalid-port.log
+                exit 1
+              fi
+              echo "OK: an invalid preview_port fails with its pinned diagnostic"
+
+              with_site fixture/site-a 8080 < "$registry" \
+                | with_site fixture/site-b 8080 > /tmp/shared-port-registry.json
+              if validate_registry /tmp/shared-port-registry.json "$machines" > /tmp/shared-port.log 2>&1; then
+                echo "ERROR: two repositories sharing a preview_port still passed validation"
+                exit 1
+              fi
+              if ! grep -F 'duplicate preview_port 8080: fixture/site-a, fixture/site-b' \
+                  /tmp/shared-port.log >/dev/null; then
+                echo "ERROR: shared preview_port sabotage failed for an unexpected reason"
+                cat /tmp/shared-port.log
+                exit 1
+              fi
+              echo "OK: two repositories sharing a preview_port fail with a pinned diagnostic"
+
+              with_site fixture/site-a 1024 < "$registry" > /tmp/valid-port-registry.json
+              if ! validate_registry /tmp/valid-port-registry.json "$machines" > /tmp/valid-port.log 2>&1; then
+                echo "ERROR: a valid preview_port was refused"
+                cat /tmp/valid-port.log
+                exit 1
+              fi
+              echo "OK: a valid preview_port passes validation"
 
               touch "$out"
             '';
