@@ -100,7 +100,7 @@ Each alias resolves to:
 | `source` | `forge` or `git` |
 | `remote` | path/URL on the source (rejected if it contains whitespace, `..`, or a leading/trailing `/`) |
 | `checkout` | workspace-relative checkout path (same safety constraints) |
-| `preview_port` | optional; its presence means the repository is a site `allod site preview` can serve. An integer from 1024 to 65535, unique across the registry |
+| `preview_port` | optional; its presence means the repository is a site `allod site serve` can serve. An integer from 1024 to 65535, unique across the registry |
 
 A machine's `repos` list references these aliases; host scripts (`nexus`)
 resolve an alias to its `remote`/`checkout` when cloning a machine's workspace.
