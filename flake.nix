@@ -142,6 +142,24 @@
 
           runtimeFree = lib.filterAttrs (_: m: isRuntimeFree m) typed;
           vms = lib.filterAttrs (_: m: !(isRuntimeFree m)) typed;
+
+          # `data_disk`'s three shape predicates (path, size_gb, unknown keys)
+          # read the attrset directly and so are guarded on `isAttrs` first,
+          # the same way the runtime predicates above are guarded on `isString`
+          # before `elem`.
+          hasValidDataDiskPath = dd:
+            (dd ? path) && builtins.isString dd.path
+            && lib.hasPrefix "/" dd.path
+            && !(lib.hasInfix ".." dd.path)
+            && (builtins.match ".*[[:space:]].*" dd.path == null);
+          hasValidDataDiskSizeGb = dd:
+            !(dd ? size_gb) || (builtins.isInt dd.size_gb && dd.size_gb > 0);
+          hasOnlyKnownDataDiskKeys = dd:
+            lib.all (k: builtins.elem k [ "path" "size_gb" ]) (builtins.attrNames dd);
+
+          vmsWithDataDisk = lib.filterAttrs (_: m: m ? data_disk) vms;
+          vmsDataDiskIsAttrs =
+            lib.filterAttrs (_: m: builtins.isAttrs m.data_disk) vmsWithDataDisk;
         in {
           missingType = lib.filterAttrs (_: m: !(m ? type)) ms;
           nonStringType =
@@ -167,6 +185,26 @@
             lib.filterAttrs
               (_: m: (m ? runtime) && builtins.isString m.runtime && !(builtins.elem m.runtime validRuntimes))
               vms;
+
+          # `data_disk` is optional on a guest and forbidden on a runtime-free
+          # machine, so its hypervisor rule is checked the same way
+          # `runtimeFreeWithRuntime` is: against `runtimeFree`, before the
+          # guest-only shape rules below ever read the value. That keeps a
+          # malformed `data_disk` on a hypervisor pinned to this one
+          # diagnostic instead of also tripping a shape rule.
+          dataDiskOnHypervisor = lib.filterAttrs (_: m: m ? data_disk) runtimeFree;
+
+          dataDiskNotAttrs =
+            lib.filterAttrs (_: m: !(builtins.isAttrs m.data_disk)) vmsWithDataDisk;
+
+          dataDiskInvalidPath =
+            lib.filterAttrs (_: m: !(hasValidDataDiskPath m.data_disk)) vmsDataDiskIsAttrs;
+
+          dataDiskInvalidSizeGb =
+            lib.filterAttrs (_: m: !(hasValidDataDiskSizeGb m.data_disk)) vmsDataDiskIsAttrs;
+
+          dataDiskUnknownKeys =
+            lib.filterAttrs (_: m: !(hasOnlyKnownDataDiskKeys m.data_disk)) vmsDataDiskIsAttrs;
         };
 
       # Parameterized on an explicit machine set, rather than closing over
@@ -210,16 +248,30 @@
             assert lib.assertMsg (diag.unknownRuntime == {})
               "inventory machines with unknown runtime (expected one of: ${lib.concatStringsSep ", " validRuntimes}): ${lib.concatStringsSep ", " (builtins.attrNames diag.unknownRuntime)}";
             true;
+
+          dataDiskShape =
+            assert lib.assertMsg (diag.dataDiskOnHypervisor == {})
+              "inventory ${lib.concatStringsSep " and " runtimeFreeTypes} machines must not declare data_disk: ${lib.concatStringsSep ", " (builtins.attrNames diag.dataDiskOnHypervisor)}";
+            assert lib.assertMsg (diag.dataDiskNotAttrs == {})
+              "inventory machines with non-attrset data_disk: ${lib.concatStringsSep ", " (builtins.attrNames diag.dataDiskNotAttrs)}";
+            assert lib.assertMsg (diag.dataDiskInvalidPath == {})
+              "inventory machines with invalid data_disk path (must be absolute, without whitespace or ..): ${lib.concatStringsSep ", " (builtins.attrNames diag.dataDiskInvalidPath)}";
+            assert lib.assertMsg (diag.dataDiskInvalidSizeGb == {})
+              "inventory machines with invalid data_disk size_gb (must be a positive integer): ${lib.concatStringsSep ", " (builtins.attrNames diag.dataDiskInvalidSizeGb)}";
+            assert lib.assertMsg (diag.dataDiskUnknownKeys == {})
+              "inventory machines with unknown data_disk keys (only path and size_gb allowed): ${lib.concatStringsSep ", " (builtins.attrNames diag.dataDiskUnknownKeys)}";
+            true;
         in
         # The order, stated once and enforced by forcing rather than by layout.
         builtins.seq machineShape
           (builtins.seq runtimeShape
-            (lib.filterAttrs (_: m: !(isRuntimeFree m)) ms));
+            (builtins.seq dataDiskShape
+              (lib.filterAttrs (_: m: !(isRuntimeFree m)) ms)));
 
       mkVmSpecsJson = ms: builtins.toJSON (lib.mapAttrs (name: m: {
         inherit (m) memory_mb vcpus disk_gb ip mac forge_key repos runtime;
         self_rebuild = m.self_rebuild or true;
-      }) (mkVmSpecs ms));
+      } // lib.optionalAttrs (m ? data_disk) { inherit (m) data_disk; }) (mkVmSpecs ms));
 
       # Forces the machine validation chain even when a consumer reads the
       # raw `machines`/`lib.machines` surface instead of `lib.vmSpecsJson`.
@@ -663,6 +715,90 @@
                 fi
 
                 echo "runtime-fact-mutations passed: valid data has no diagnostics, each sabotaged fixture is pinned to exactly the diagnostic it targets and fails the real mkVmSpecsJson path, hypervisor stays excluded, and drift detection is proven"
+                touch "$out"
+              ''
+            );
+
+          # Validator validation for the optional `data_disk` fact, in the
+          # same shape as runtime-fact-mutations above: one sabotage fixture
+          # per validator, each pinned to its own diagnostic and proven to
+          # fail the real mkVmSpecsJson path, plus one positive fixture
+          # proving a valid `data_disk` survives into the generated spec.
+          data-disk-fact-mutations = pkgs.runCommand "data-disk-fact-mutations-check"
+            { nativeBuildInputs = [ pkgs.jq ]; }
+            (
+              let
+                machinesDataDiskOnHypervisor = machines // {
+                  nexus = machines.nexus // {
+                    data_disk = { path = "/var/lib/allod/fixture-hypervisor-data.img"; };
+                  };
+                };
+
+                machinesDataDiskNotAttrs = machines // {
+                  "privacy-1" = machines."privacy-1" // { data_disk = "not-an-attrset"; };
+                };
+
+                machinesDataDiskInvalidPath = machines // {
+                  "privacy-1" = machines."privacy-1" // {
+                    data_disk = { path = "relative/fixture-data.img"; };
+                  };
+                };
+
+                machinesDataDiskInvalidSizeGb = machines // {
+                  "privacy-1" = machines."privacy-1" // {
+                    data_disk = { path = "/var/lib/allod/fixture-data.img"; size_gb = 0; };
+                  };
+                };
+
+                machinesDataDiskUnknownKeys = machines // {
+                  "privacy-1" = machines."privacy-1" // {
+                    data_disk = { path = "/var/lib/allod/fixture-data.img"; format = "raw"; };
+                  };
+                };
+
+                machinesWithValidDataDisk = machines // {
+                  "privacy-1" = machines."privacy-1" // {
+                    data_disk = { path = "/var/lib/allod/fixture-data.img"; size_gb = 100; };
+                  };
+                };
+
+                validDiag = machineDiagnostics machines;
+                validHasNoDiagnostics = lib.all (f: validDiag.${f} == {}) diagnosticFields;
+
+                b = boolLiteral;
+
+                validSpec = builtins.fromJSON (mkVmSpecsJson machinesWithValidDataDisk);
+              in
+              ''
+                ${checkPrelude}
+
+                check "valid machines have no diagnostics" true "${b validHasNoDiagnostics}"
+
+                check "hypervisor with data_disk: pinned to its own diagnostic" true "${b (pinnedTo "dataDiskOnHypervisor" "nexus" machinesDataDiskOnHypervisor)}"
+                check "hypervisor with data_disk: fails mkVmSpecsJson"          true "${b (rejects machinesDataDiskOnHypervisor)}"
+
+                check "non-attrset data_disk: pinned to its own diagnostic" true "${b (pinnedTo "dataDiskNotAttrs" "privacy-1" machinesDataDiskNotAttrs)}"
+                check "non-attrset data_disk: fails mkVmSpecsJson"          true "${b (rejects machinesDataDiskNotAttrs)}"
+
+                check "invalid data_disk path: pinned to its own diagnostic" true "${b (pinnedTo "dataDiskInvalidPath" "privacy-1" machinesDataDiskInvalidPath)}"
+                check "invalid data_disk path: fails mkVmSpecsJson"          true "${b (rejects machinesDataDiskInvalidPath)}"
+
+                check "invalid data_disk size_gb: pinned to its own diagnostic" true "${b (pinnedTo "dataDiskInvalidSizeGb" "privacy-1" machinesDataDiskInvalidSizeGb)}"
+                check "invalid data_disk size_gb: fails mkVmSpecsJson"          true "${b (rejects machinesDataDiskInvalidSizeGb)}"
+
+                check "unknown data_disk keys: pinned to its own diagnostic" true "${b (pinnedTo "dataDiskUnknownKeys" "privacy-1" machinesDataDiskUnknownKeys)}"
+                check "unknown data_disk keys: fails mkVmSpecsJson"          true "${b (rejects machinesDataDiskUnknownKeys)}"
+
+                check "valid data_disk: accepted by mkVmSpecsJson" true "${b (accepts machinesWithValidDataDisk)}"
+                check "valid data_disk: path carries through to the generated spec" "/var/lib/allod/fixture-data.img" "${validSpec."privacy-1".data_disk.path}"
+                check "valid data_disk: size_gb carries through to the generated spec" "100" "${toString validSpec."privacy-1".data_disk.size_gb}"
+
+                if [ "$errors" -gt 0 ]; then
+                  echo "data-disk-fact-mutations failed with $errors error(s)"
+                  exit 1
+                fi
+
+                echo "data-disk-fact-mutations passed: valid data has no diagnostics, each sabotaged fixture is pinned to exactly the diagnostic it targets and fails the real mkVmSpecsJson path, and a valid data_disk survives into the generated spec"
                 touch "$out"
               ''
             );

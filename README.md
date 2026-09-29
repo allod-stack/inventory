@@ -37,6 +37,7 @@ This repo does **not** own:
 | `checks.<system>.vm-specs-json` | derivation | fails if `scripts/vm-specs.json` diverges from `lib.vmSpecsJson` |
 | `checks.<system>.repository-registry` | derivation | validates `scripts/repositories.json` against every raw machine, including hypervisors, and proves its required-alias guards fail under sabotage |
 | `checks.<system>.runtime-fact-mutations` | derivation | proves a missing, non-string, or unknown `runtime` fails evaluation, that a hypervisor cannot declare one, that hypervisors stay excluded, that both public runtime examples are present, and that JSON drift is detected |
+| `checks.<system>.data-disk-fact-mutations` | derivation | proves a malformed optional `data_disk` fails evaluation, that a hypervisor cannot declare one, and that a valid `data_disk` survives into the generated spec |
 
 The flake's only input is `nixpkgs` (nixos-25.11). `checks` is generated per
 entry in `lib.supportedPlatforms` (currently `x86_64-linux` only).
@@ -66,6 +67,7 @@ Each entry in `machines` is an attrset:
 | `forge_key` | string \| null | forge SSH key name, or `null` |
 | `self_rebuild` | bool | optional; treated as `true` when omitted |
 | `repos` | list of string | repo-registry aliases to check out on the machine |
+| `data_disk` | attrset | optional; a second disk that outlives reprovisioning. `{ path, size_gb }`: `path` absolute, no whitespace or `..`; `size_gb` optional, a positive integer, used only to create an image file that does not exist yet. Forbidden on a hypervisor |
 | `hardware` | NixOS module | hypervisor-only; imported by `profiles` for the host toplevel |
 
 Example machines shipped in the template: `allod-dev` (`dev`,
@@ -79,8 +81,9 @@ generated hardware config.
 
 `lib.vmSpecsJson` maps every guest machine to only the fields host
 tooling needs — `memory_mb`, `vcpus`, `disk_gb`, `ip`, `mac`, `forge_key`,
-`repos`, `self_rebuild`, `runtime` — dropping `platform`, `type`, and
-`hardware`. `scripts/vm-specs.json` is the committed, key-sorted copy.
+`repos`, `self_rebuild`, `runtime`, and `data_disk` when declared — dropping
+`platform`, `type`, and `hardware`. `scripts/vm-specs.json` is the committed,
+key-sorted copy.
 Regenerate it after editing `machines`:
 
 ```
@@ -173,6 +176,30 @@ against sabotaged copies of `machines` and proves each failure mode actually
 fails, that a hypervisor cannot silently acquire a runtime, that the
 hypervisor stays excluded, that both public runtime examples exist, and that the
 `vm-specs-json` drift check is not vacuous.
+
+## Data disk assertions
+
+`data_disk` is optional; a machine that omits it is unaffected. When present,
+evaluating the flake fails fast if:
+
+- `data_disk` is not an attribute set — `inventory machines with non-attrset
+  data_disk: <names>`
+- `path` is missing, not a string, not absolute, or contains whitespace or
+  `..` — `inventory machines with invalid data_disk path (must be absolute,
+  without whitespace or ..): <names>`
+- `size_gb` is present and is not a positive integer — `inventory machines
+  with invalid data_disk size_gb (must be a positive integer): <names>`
+- `data_disk` has a key other than `path` or `size_gb` — `inventory machines
+  with unknown data_disk keys (only path and size_gb allowed): <names>`
+- a hypervisor machine declares one at all — `inventory hypervisor machines
+  must not declare data_disk: <names>`
+
+`scripts/vm-specs.json` carries `data_disk` only for a machine that declares
+it, so a machine with none produces the same generated spec as before this
+field existed. The `data-disk-fact-mutations` check runs this validation
+against sabotaged copies of `machines`, one fixture per rule, and against one
+fixture with a valid `data_disk` to prove the field reaches the generated
+spec unchanged.
 
 ## Consumers
 
