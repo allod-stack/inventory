@@ -67,7 +67,7 @@ Each entry in `machines` is an attrset:
 | `forge_key` | string \| null | forge SSH key name, or `null` |
 | `self_rebuild` | bool | optional; treated as `true` when omitted |
 | `repos` | list of string | repo-registry aliases to check out on the machine |
-| `data_disk` | attrset | optional; a second disk that outlives reprovisioning. `{ path, size_gb }`: `path` absolute, no whitespace or `..`; `size_gb` optional, a positive integer, used only to create an image file that does not exist yet. Forbidden on a hypervisor |
+| `data_disk` | attrset | optional; a second disk that outlives reprovisioning. `{ path, size_gb }`: `path` absolute, no whitespace, `..`, comma, or trailing slash; `size_gb` optional, a positive integer, used only to create an image file that does not exist yet. Forbidden on a hypervisor |
 | `hardware` | NixOS module | hypervisor-only; imported by `profiles` for the host toplevel |
 
 Example machines shipped in the template: `allod-dev` (`dev`,
@@ -184,9 +184,10 @@ evaluating the flake fails fast if:
 
 - `data_disk` is not an attribute set — `inventory machines with non-attrset
   data_disk: <names>`
-- `path` is missing, not a string, not absolute, or contains whitespace or
-  `..` — `inventory machines with invalid data_disk path (must be absolute,
-  without whitespace or ..): <names>`
+- `path` is missing, not a string, not absolute, or contains whitespace, `..`,
+  a comma, or a trailing slash — `inventory machines with invalid data_disk
+  path (must be absolute, without whitespace, .., a comma, or a trailing
+  slash): <names>`
 - `size_gb` is present and is not a positive integer — `inventory machines
   with invalid data_disk size_gb (must be a positive integer): <names>`
 - `data_disk` has a key other than `path` or `size_gb` — `inventory machines

@@ -143,14 +143,14 @@
           runtimeFree = lib.filterAttrs (_: m: isRuntimeFree m) typed;
           vms = lib.filterAttrs (_: m: !(isRuntimeFree m)) typed;
 
-          # `data_disk`'s three shape predicates (path, size_gb, unknown keys)
-          # read the attrset directly and so are guarded on `isAttrs` first,
-          # the same way the runtime predicates above are guarded on `isString`
-          # before `elem`.
+          # Guarded on `isAttrs` first: reading `dd.path` before that check
+          # would throw uncatchably, the same trap `isString` guards above.
           hasValidDataDiskPath = dd:
             (dd ? path) && builtins.isString dd.path
             && lib.hasPrefix "/" dd.path
+            && !(lib.hasSuffix "/" dd.path)
             && !(lib.hasInfix ".." dd.path)
+            && !(lib.hasInfix "," dd.path)
             && (builtins.match ".*[[:space:]].*" dd.path == null);
           hasValidDataDiskSizeGb = dd:
             !(dd ? size_gb) || (builtins.isInt dd.size_gb && dd.size_gb > 0);
@@ -186,12 +186,8 @@
               (_: m: (m ? runtime) && builtins.isString m.runtime && !(builtins.elem m.runtime validRuntimes))
               vms;
 
-          # `data_disk` is optional on a guest and forbidden on a runtime-free
-          # machine, so its hypervisor rule is checked the same way
-          # `runtimeFreeWithRuntime` is: against `runtimeFree`, before the
-          # guest-only shape rules below ever read the value. That keeps a
-          # malformed `data_disk` on a hypervisor pinned to this one
-          # diagnostic instead of also tripping a shape rule.
+          # Checked against `runtimeFree`, before the guest-only shape rules,
+          # so a hypervisor's data_disk trips only this diagnostic.
           dataDiskOnHypervisor = lib.filterAttrs (_: m: m ? data_disk) runtimeFree;
 
           dataDiskNotAttrs =
@@ -255,7 +251,7 @@
             assert lib.assertMsg (diag.dataDiskNotAttrs == {})
               "inventory machines with non-attrset data_disk: ${lib.concatStringsSep ", " (builtins.attrNames diag.dataDiskNotAttrs)}";
             assert lib.assertMsg (diag.dataDiskInvalidPath == {})
-              "inventory machines with invalid data_disk path (must be absolute, without whitespace or ..): ${lib.concatStringsSep ", " (builtins.attrNames diag.dataDiskInvalidPath)}";
+              "inventory machines with invalid data_disk path (must be absolute, without whitespace, .., a comma, or a trailing slash): ${lib.concatStringsSep ", " (builtins.attrNames diag.dataDiskInvalidPath)}";
             assert lib.assertMsg (diag.dataDiskInvalidSizeGb == {})
               "inventory machines with invalid data_disk size_gb (must be a positive integer): ${lib.concatStringsSep ", " (builtins.attrNames diag.dataDiskInvalidSizeGb)}";
             assert lib.assertMsg (diag.dataDiskUnknownKeys == {})
@@ -719,11 +715,6 @@
               ''
             );
 
-          # Validator validation for the optional `data_disk` fact, in the
-          # same shape as runtime-fact-mutations above: one sabotage fixture
-          # per validator, each pinned to its own diagnostic and proven to
-          # fail the real mkVmSpecsJson path, plus one positive fixture
-          # proving a valid `data_disk` survives into the generated spec.
           data-disk-fact-mutations = pkgs.runCommand "data-disk-fact-mutations-check"
             { nativeBuildInputs = [ pkgs.jq ]; }
             (
@@ -740,7 +731,19 @@
 
                 machinesDataDiskInvalidPath = machines // {
                   "privacy-1" = machines."privacy-1" // {
-                    data_disk = { path = "relative/fixture-data.img"; };
+                    data_disk = { path = "/var/lib/allod/fixture,data.img"; };
+                  };
+                };
+
+                machinesDataDiskPathBlockDevice = machines // {
+                  "privacy-1" = machines."privacy-1" // {
+                    data_disk = { path = "/dev/disk/by-id/nvme-EXAMPLE_DRIVE_1000GB_0000-part1"; };
+                  };
+                };
+
+                machinesDataDiskPathImageFile = machines // {
+                  "privacy-1" = machines."privacy-1" // {
+                    data_disk = { path = "/var/lib/example/data.img"; };
                   };
                 };
 
@@ -782,6 +785,9 @@
 
                 check "invalid data_disk path: pinned to its own diagnostic" true "${b (pinnedTo "dataDiskInvalidPath" "privacy-1" machinesDataDiskInvalidPath)}"
                 check "invalid data_disk path: fails mkVmSpecsJson"          true "${b (rejects machinesDataDiskInvalidPath)}"
+
+                check "data_disk path accepts a block-device-style path" true "${b (accepts machinesDataDiskPathBlockDevice)}"
+                check "data_disk path accepts a plain image file path"   true "${b (accepts machinesDataDiskPathImageFile)}"
 
                 check "invalid data_disk size_gb: pinned to its own diagnostic" true "${b (pinnedTo "dataDiskInvalidSizeGb" "privacy-1" machinesDataDiskInvalidSizeGb)}"
                 check "invalid data_disk size_gb: fails mkVmSpecsJson"          true "${b (rejects machinesDataDiskInvalidSizeGb)}"
