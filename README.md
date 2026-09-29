@@ -38,6 +38,7 @@ This repo does **not** own:
 | `checks.<system>.repository-registry` | derivation | validates `scripts/repositories.json` against every raw machine, including hypervisors, and proves its required-alias guards fail under sabotage |
 | `checks.<system>.runtime-fact-mutations` | derivation | proves a missing, non-string, or unknown `runtime` fails evaluation, that a hypervisor cannot declare one, that hypervisors stay excluded, that both public runtime examples are present, and that JSON drift is detected |
 | `checks.<system>.data-disk-fact-mutations` | derivation | proves a malformed optional `data_disk` fails evaluation, that a hypervisor cannot declare one, and that a valid `data_disk` survives into the generated spec |
+| `checks.<system>.host-fact-mutations` | derivation | proves a malformed optional `host` fails evaluation, that a hypervisor cannot declare one, that a guest is required to declare one once a second hypervisor exists, and that a valid `host` survives into the generated spec |
 
 The flake's only input is `nixpkgs` (nixos-25.11). `checks` is generated per
 entry in `lib.supportedPlatforms` (currently `x86_64-linux` only).
@@ -68,6 +69,7 @@ Each entry in `machines` is an attrset:
 | `self_rebuild` | bool | optional; treated as `true` when omitted |
 | `repos` | list of string | repo-registry aliases to check out on the machine |
 | `data_disk` | attrset | optional; a second disk that outlives reprovisioning. `{ path, size_gb }`: `path` absolute, no whitespace, `..`, comma, or trailing slash; `size_gb` optional, a positive integer, used only to create an image file that does not exist yet. Forbidden on a hypervisor |
+| `host` | string | optional; the name of the hypervisor machine that runs this guest. Must name a known machine of type `hypervisor`. Forbidden on a hypervisor. Required on every guest once more than one hypervisor is declared |
 | `hardware` | NixOS module | hypervisor-only; imported by `profiles` for the host toplevel |
 
 Example machines shipped in the template: `allod-dev` (`dev`,
@@ -81,9 +83,9 @@ generated hardware config.
 
 `lib.vmSpecsJson` maps every guest machine to only the fields host
 tooling needs — `memory_mb`, `vcpus`, `disk_gb`, `ip`, `mac`, `forge_key`,
-`repos`, `self_rebuild`, `runtime`, and `data_disk` when declared — dropping
-`platform`, `type`, and `hardware`. `scripts/vm-specs.json` is the committed,
-key-sorted copy.
+`repos`, `self_rebuild`, `runtime`, `data_disk` when declared, and `host` when
+declared — dropping `platform`, `type`, and `hardware`. `scripts/vm-specs.json`
+is the committed, key-sorted copy.
 Regenerate it after editing `machines`:
 
 ```
@@ -201,6 +203,33 @@ field existed. The `data-disk-fact-mutations` check runs this validation
 against sabotaged copies of `machines`, one fixture per rule, and against one
 fixture with a valid `data_disk` to prove the field reaches the generated
 spec unchanged.
+
+## Host assertions
+
+`host` is optional; a guest that omits it is unaffected as long as at most one
+hypervisor is declared. When present, evaluating the flake fails fast if:
+
+- a hypervisor machine declares one at all — `inventory hypervisor machines
+  must not declare host: <names>`
+- `host` is not a string — `inventory machines with non-string host: <names>`
+- `host` does not name a known machine — `inventory machines with unknown
+  host: <names>`
+- the named machine is not of type `hypervisor` — `inventory machines whose
+  host is not a hypervisor: <names>`
+
+and for a guest that omits it once more than one hypervisor is declared —
+`inventory machines missing host (required once more than one hypervisor is
+declared): <names>`. With one hypervisor, an absent `host` has nothing to
+disambiguate and is not a diagnostic.
+
+`scripts/vm-specs.json` carries `host` only for a machine that declares it,
+the same optional spelling as `data_disk`, so a deployment with one
+hypervisor produces the same generated spec as before this field existed.
+The `host-fact-mutations` check runs this validation against sabotaged
+copies of `machines`, one fixture per rule; its two-hypervisor fixtures add a
+second synthetic hypervisor to a local copy of the machine set only, never to
+`machines` itself, so `scripts/vm-specs.json` never needs a second real
+hypervisor to stay covered.
 
 ## Consumers
 

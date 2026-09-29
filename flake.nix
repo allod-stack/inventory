@@ -160,6 +160,12 @@
           vmsWithDataDisk = lib.filterAttrs (_: m: m ? data_disk) vms;
           vmsDataDiskIsAttrs =
             lib.filterAttrs (_: m: builtins.isAttrs m.data_disk) vmsWithDataDisk;
+
+          vmsWithHost = lib.filterAttrs (_: m: m ? host) vms;
+          vmsHostIsString =
+            lib.filterAttrs (_: m: builtins.isString m.host) vmsWithHost;
+          vmsHostKnown =
+            lib.filterAttrs (_: m: builtins.hasAttr m.host ms) vmsHostIsString;
         in {
           missingType = lib.filterAttrs (_: m: !(m ? type)) ms;
           nonStringType =
@@ -201,6 +207,29 @@
 
           dataDiskUnknownKeys =
             lib.filterAttrs (_: m: !(hasOnlyKnownDataDiskKeys m.data_disk)) vmsDataDiskIsAttrs;
+
+          # Checked against `runtimeFree`, same reasoning as `dataDiskOnHypervisor`:
+          # a hypervisor declaring `host` trips only this diagnostic.
+          hostOnHypervisor = lib.filterAttrs (_: m: m ? host) runtimeFree;
+
+          hostNotAString =
+            lib.filterAttrs (_: m: !(builtins.isString m.host)) vmsWithHost;
+
+          unknownHost =
+            lib.filterAttrs (_: m: !(builtins.hasAttr m.host ms)) vmsHostIsString;
+
+          hostNotHypervisor =
+            lib.filterAttrs
+              (_: m: !((ms.${m.host} ? type) && ms.${m.host}.type == "hypervisor"))
+              vmsHostKnown;
+
+          # Only meaningful once a guest could be ambiguous about which
+          # hypervisor runs it; with exactly one hypervisor there is nothing
+          # to disambiguate, so an absent `host` is not a diagnostic.
+          guestMissingHost =
+            if lib.length (builtins.attrNames runtimeFree) > 1
+            then lib.filterAttrs (_: m: !(m ? host)) vms
+            else {};
         };
 
       # Parameterized on an explicit machine set, rather than closing over
@@ -257,17 +286,32 @@
             assert lib.assertMsg (diag.dataDiskUnknownKeys == {})
               "inventory machines with unknown data_disk keys (only path and size_gb allowed): ${lib.concatStringsSep ", " (builtins.attrNames diag.dataDiskUnknownKeys)}";
             true;
+
+          hostShape =
+            assert lib.assertMsg (diag.hostOnHypervisor == {})
+              "inventory ${lib.concatStringsSep " and " runtimeFreeTypes} machines must not declare host: ${lib.concatStringsSep ", " (builtins.attrNames diag.hostOnHypervisor)}";
+            assert lib.assertMsg (diag.hostNotAString == {})
+              "inventory machines with non-string host: ${lib.concatStringsSep ", " (builtins.attrNames diag.hostNotAString)}";
+            assert lib.assertMsg (diag.unknownHost == {})
+              "inventory machines with unknown host: ${lib.concatStringsSep ", " (builtins.attrNames diag.unknownHost)}";
+            assert lib.assertMsg (diag.hostNotHypervisor == {})
+              "inventory machines whose host is not a hypervisor: ${lib.concatStringsSep ", " (builtins.attrNames diag.hostNotHypervisor)}";
+            assert lib.assertMsg (diag.guestMissingHost == {})
+              "inventory machines missing host (required once more than one hypervisor is declared): ${lib.concatStringsSep ", " (builtins.attrNames diag.guestMissingHost)}";
+            true;
         in
         # The order, stated once and enforced by forcing rather than by layout.
         builtins.seq machineShape
           (builtins.seq runtimeShape
             (builtins.seq dataDiskShape
-              (lib.filterAttrs (_: m: !(isRuntimeFree m)) ms)));
+              (builtins.seq hostShape
+                (lib.filterAttrs (_: m: !(isRuntimeFree m)) ms))));
 
       mkVmSpecsJson = ms: builtins.toJSON (lib.mapAttrs (name: m: {
         inherit (m) memory_mb vcpus disk_gb ip mac forge_key repos runtime;
         self_rebuild = m.self_rebuild or true;
-      } // lib.optionalAttrs (m ? data_disk) { inherit (m) data_disk; }) (mkVmSpecs ms));
+      } // lib.optionalAttrs (m ? data_disk) { inherit (m) data_disk; }
+        // lib.optionalAttrs (m ? host) { inherit (m) host; }) (mkVmSpecs ms));
 
       # Forces the machine validation chain even when a consumer reads the
       # raw `machines`/`lib.machines` surface instead of `lib.vmSpecsJson`.
@@ -805,6 +849,104 @@
                 fi
 
                 echo "data-disk-fact-mutations passed: valid data has no diagnostics, each sabotaged fixture is pinned to exactly the diagnostic it targets and fails the real mkVmSpecsJson path, and a valid data_disk survives into the generated spec"
+                touch "$out"
+              ''
+            );
+
+          host-fact-mutations = pkgs.runCommand "host-fact-mutations-check"
+            { nativeBuildInputs = [ pkgs.jq ]; }
+            (
+              let
+                # A second synthetic hypervisor, added only to a copy of the
+                # fixture machine set here — never to `machines` itself
+                # (testing.md: "do not name a real machine in a fixture";
+                # this repo's boundary: no second hypervisor outside a check).
+                secondHypervisor = {
+                  platform = "x86_64-linux";
+                  type = "hypervisor";
+                  memory_mb = 8192;
+                  vcpus = 4;
+                  disk_gb = 100;
+                  ip = "192.0.2.20";
+                  mac = "52:54:00:00:00:20";
+                  forge_key = null;
+                  repos = [ "allod/nexus" "allod/inventory" "allod/secrets" "allod/profiles" ];
+                };
+
+                machinesTwoHypervisors = machines // { "fixture-hv" = secondHypervisor; };
+
+                machinesTwoHypervisorsWithHosts = machinesTwoHypervisors // {
+                  "allod-dev" = machinesTwoHypervisors."allod-dev" // { host = "nexus"; };
+                  "privacy-1" = machinesTwoHypervisors."privacy-1" // { host = "fixture-hv"; };
+                };
+
+                machinesHostOnHypervisor = machines // {
+                  nexus = machines.nexus // { host = "allod-dev"; };
+                };
+
+                machinesHostNotAString = machines // {
+                  "privacy-1" = machines."privacy-1" // { host = 42; };
+                };
+
+                machinesUnknownHost = machines // {
+                  "privacy-1" = machines."privacy-1" // { host = "no-such-machine"; };
+                };
+
+                machinesHostNotHypervisor = machines // {
+                  "privacy-1" = machines."privacy-1" // { host = "allod-dev"; };
+                };
+
+                # Two hypervisors, one guest declares host and the other does
+                # not, so the diagnostic pins to exactly the machine missing it.
+                machinesGuestMissingHost = machinesTwoHypervisors // {
+                  "allod-dev" = machinesTwoHypervisors."allod-dev" // { host = "nexus"; };
+                };
+
+                validDiag = machineDiagnostics machines;
+                validHasNoDiagnostics = lib.all (f: validDiag.${f} == {}) diagnosticFields;
+
+                twoHypervisorDiag = machineDiagnostics machinesTwoHypervisorsWithHosts;
+                twoHypervisorHasNoDiagnostics =
+                  lib.all (f: twoHypervisorDiag.${f} == {}) diagnosticFields;
+
+                b = boolLiteral;
+
+                noHostSpec = builtins.fromJSON (mkVmSpecsJson machines);
+                withHostsSpec = builtins.fromJSON (mkVmSpecsJson machinesTwoHypervisorsWithHosts);
+              in
+              ''
+                ${checkPrelude}
+
+                check "valid machines have no diagnostics" true "${b validHasNoDiagnostics}"
+                check "single hypervisor: guest without host is accepted" true "${b (accepts machines)}"
+
+                check "hypervisor with host: pinned to its own diagnostic" true "${b (pinnedTo "hostOnHypervisor" "nexus" machinesHostOnHypervisor)}"
+                check "hypervisor with host: fails mkVmSpecsJson"          true "${b (rejects machinesHostOnHypervisor)}"
+
+                check "non-string host: pinned to its own diagnostic" true "${b (pinnedTo "hostNotAString" "privacy-1" machinesHostNotAString)}"
+                check "non-string host: fails mkVmSpecsJson"          true "${b (rejects machinesHostNotAString)}"
+
+                check "unknown host: pinned to its own diagnostic" true "${b (pinnedTo "unknownHost" "privacy-1" machinesUnknownHost)}"
+                check "unknown host: fails mkVmSpecsJson"          true "${b (rejects machinesUnknownHost)}"
+
+                check "host not a hypervisor: pinned to its own diagnostic" true "${b (pinnedTo "hostNotHypervisor" "privacy-1" machinesHostNotHypervisor)}"
+                check "host not a hypervisor: fails mkVmSpecsJson"          true "${b (rejects machinesHostNotHypervisor)}"
+
+                check "two hypervisors, guest missing host: pinned to its own diagnostic" true "${b (pinnedTo "guestMissingHost" "privacy-1" machinesGuestMissingHost)}"
+                check "two hypervisors, guest missing host: fails mkVmSpecsJson"          true "${b (rejects machinesGuestMissingHost)}"
+
+                check "two hypervisors, every guest declares host: no diagnostics" true "${b twoHypervisorHasNoDiagnostics}"
+                check "two hypervisors, every guest declares host: accepted"       true "${b (accepts machinesTwoHypervisorsWithHosts)}"
+                check "host carries through to the generated spec for allod-dev" "nexus" "${withHostsSpec."allod-dev".host}"
+                check "host carries through to the generated spec for privacy-1" "fixture-hv" "${withHostsSpec."privacy-1".host}"
+                check "host omitted from the generated spec when not declared" "false" "${b (noHostSpec."allod-dev" ? host)}"
+
+                if [ "$errors" -gt 0 ]; then
+                  echo "host-fact-mutations failed with $errors error(s)"
+                  exit 1
+                fi
+
+                echo "host-fact-mutations passed: valid data has no diagnostics, each sabotaged fixture is pinned to exactly the diagnostic it targets and fails the real mkVmSpecsJson path, host is required only once a second hypervisor exists, and a valid host survives into the generated spec"
                 touch "$out"
               ''
             );
