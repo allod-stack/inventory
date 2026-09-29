@@ -164,8 +164,11 @@
           vmsWithHost = lib.filterAttrs (_: m: m ? host) vms;
           vmsHostIsString =
             lib.filterAttrs (_: m: builtins.isString m.host) vmsWithHost;
+          # Restricted to `typed`, not `ms`: a target with no type or a
+          # non-string type is already `missingType`/`nonStringType` on its
+          # own name, and must not also make the guest `hostNotHypervisor`.
           vmsHostKnown =
-            lib.filterAttrs (_: m: builtins.hasAttr m.host ms) vmsHostIsString;
+            lib.filterAttrs (_: m: builtins.hasAttr m.host typed) vmsHostIsString;
         in {
           missingType = lib.filterAttrs (_: m: !(m ? type)) ms;
           nonStringType =
@@ -208,8 +211,6 @@
           dataDiskUnknownKeys =
             lib.filterAttrs (_: m: !(hasOnlyKnownDataDiskKeys m.data_disk)) vmsDataDiskIsAttrs;
 
-          # Checked against `runtimeFree`, same reasoning as `dataDiskOnHypervisor`:
-          # a hypervisor declaring `host` trips only this diagnostic.
           hostOnHypervisor = lib.filterAttrs (_: m: m ? host) runtimeFree;
 
           hostNotAString =
@@ -219,13 +220,9 @@
             lib.filterAttrs (_: m: !(builtins.hasAttr m.host ms)) vmsHostIsString;
 
           hostNotHypervisor =
-            lib.filterAttrs
-              (_: m: !((ms.${m.host} ? type) && ms.${m.host}.type == "hypervisor"))
-              vmsHostKnown;
+            lib.filterAttrs (_: m: ms.${m.host}.type != "hypervisor") vmsHostKnown;
 
-          # Only meaningful once a guest could be ambiguous about which
-          # hypervisor runs it; with exactly one hypervisor there is nothing
-          # to disambiguate, so an absent `host` is not a diagnostic.
+          # A guest needs no host until a second hypervisor exists to disambiguate.
           guestMissingHost =
             if lib.length (builtins.attrNames runtimeFree) > 1
             then lib.filterAttrs (_: m: !(m ? host)) vms
@@ -857,10 +854,9 @@
             { nativeBuildInputs = [ pkgs.jq ]; }
             (
               let
-                # A second synthetic hypervisor, added only to a copy of the
-                # fixture machine set here — never to `machines` itself
-                # (testing.md: "do not name a real machine in a fixture";
-                # this repo's boundary: no second hypervisor outside a check).
+                # Stays local to this fixture, never merged into `machines`:
+                # `repository-registry` hardcodes a fixture-delta assertion on
+                # `.nexus.repos` and would break if `machines` gained a second hypervisor.
                 secondHypervisor = {
                   platform = "x86_64-linux";
                   type = "hypervisor";
@@ -896,8 +892,14 @@
                   "privacy-1" = machines."privacy-1" // { host = "allod-dev"; };
                 };
 
-                # Two hypervisors, one guest declares host and the other does
-                # not, so the diagnostic pins to exactly the machine missing it.
+                # A target with no type at all must be reported by the
+                # existing `missingType` diagnostic alone, not also by
+                # `hostNotHypervisor` — see `vmsHostKnown` above.
+                machinesHostTargetMissingType = machines // {
+                  nexus = builtins.removeAttrs machines.nexus [ "type" ];
+                  "allod-dev" = machines."allod-dev" // { host = "nexus"; };
+                };
+
                 machinesGuestMissingHost = machinesTwoHypervisors // {
                   "allod-dev" = machinesTwoHypervisors."allod-dev" // { host = "nexus"; };
                 };
@@ -931,6 +933,9 @@
 
                 check "host not a hypervisor: pinned to its own diagnostic" true "${b (pinnedTo "hostNotHypervisor" "privacy-1" machinesHostNotHypervisor)}"
                 check "host not a hypervisor: fails mkVmSpecsJson"          true "${b (rejects machinesHostNotHypervisor)}"
+
+                check "host target with no type: pinned to the existing type diagnostic, not hostNotHypervisor" true "${b (pinnedTo "missingType" "nexus" machinesHostTargetMissingType)}"
+                check "host target with no type: fails mkVmSpecsJson"                                          true "${b (rejects machinesHostTargetMissingType)}"
 
                 check "two hypervisors, guest missing host: pinned to its own diagnostic" true "${b (pinnedTo "guestMissingHost" "privacy-1" machinesGuestMissingHost)}"
                 check "two hypervisors, guest missing host: fails mkVmSpecsJson"          true "${b (rejects machinesGuestMissingHost)}"
