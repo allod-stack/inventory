@@ -106,6 +106,7 @@ Each alias resolves to:
 | `remote` | path/URL on the source (rejected if it contains whitespace, `..`, or a leading/trailing `/`) |
 | `checkout` | workspace-relative checkout path (same safety constraints) |
 | `preview_port` | optional; its presence means the repository is a site `allod site serve` can serve. An integer from 1024 to 65535, unique across the registry |
+| `memory` | optional; `true` means the repository is a memory repository every dev VM clones and reads at session start. The VM framework's home-manager generator derives the harness memory bootstrap from the entries carrying this flag |
 
 A machine's `repos` list references these aliases; host scripts (`nexus`)
 resolve an alias to its `remote`/`checkout` when cloning a machine's workspace.
@@ -114,7 +115,8 @@ The `repository-registry` check derives its machine input directly from the raw
 valid JSON, at least one entry, required fields present, a known `source`, safe
 `remote`/`checkout` values, no duplicate checkout paths within any machine,
 every machine-referenced alias defined, a `preview_port` that is an integer from
-1024 to 65535 and unique across the registry wherever the field is present, and
+1024 to 65535 and unique across the registry wherever the field is present, a
+`memory` flag that is boolean wherever the field is present, and
 the `allod/profiles`, `allod/secrets`, and `allod/inventory` aliases on both
 self-rebuild guests and every hypervisor. Mutation witnesses remove each
 required Nexus alias, add an unknown alias, create a duplicate checkout path,

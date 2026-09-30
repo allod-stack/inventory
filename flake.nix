@@ -426,6 +426,7 @@
                 local count
                 local alias source remote checkout machine repo_alias dupes machine_type self_rebuild required_alias
                 local preview_port duplicate_port
+                local memory_flag
 
                 if ! jq empty "$candidate_registry"; then
                   echo "ERROR: repositories.json is not valid JSON"
@@ -462,6 +463,17 @@
                   if echo "$checkout" | grep -qE '(\s|\.\.|^/|/$)'; then
                     echo "ERROR: $alias: unsafe checkout value '$checkout'"
                     errors=$((errors + 1))
+                  fi
+
+                  if jq -e --arg a "$alias" '.repositories[$a] | has("memory")' \
+                      "$candidate_registry" >/dev/null; then
+                    memory_flag=$(jq -r --arg a "$alias" '.repositories[$a].memory | tojson' \
+                      "$candidate_registry")
+                    if ! jq -e --arg a "$alias" '.repositories[$a].memory | type == "boolean"' \
+                        "$candidate_registry" >/dev/null; then
+                      echo "ERROR: $alias: memory flag $memory_flag is not a boolean"
+                      errors=$((errors + 1))
+                    fi
                   fi
 
                   if jq -e --arg a "$alias" '.repositories[$a] | has("preview_port")' \
@@ -625,6 +637,20 @@
                 exit 1
               fi
               echo "OK: a valid preview_port passes validation"
+
+              jq '.repositories["fixture/site-b"] = { source: "forge", remote: "fixture/site-b", checkout: "fixture/site-b", memory: "yes" }' \
+                "$registry" > /tmp/invalid-memory-registry.json
+              if validate_registry /tmp/invalid-memory-registry.json "$machines" > /tmp/invalid-memory.log 2>&1; then
+                echo "ERROR: a non-boolean memory flag still passed validation"
+                exit 1
+              fi
+              if ! grep -F 'fixture/site-b: memory flag "yes" is not a boolean' \
+                  /tmp/invalid-memory.log >/dev/null; then
+                echo "ERROR: invalid memory-flag sabotage failed for an unexpected reason"
+                cat /tmp/invalid-memory.log
+                exit 1
+              fi
+              echo "OK: a non-boolean memory flag fails with its pinned diagnostic"
 
               touch "$out"
             '';

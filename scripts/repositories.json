@@ -23,7 +23,8 @@
     "allod/memory": {
       "source": "forge",
       "remote": "allod/memory",
-      "checkout": "allod/memory"
+      "checkout": "allod/memory",
+      "memory": true
     },
     "allod/archetypes": {
       "source": "forge",
