@@ -855,8 +855,8 @@
             (
               let
                 # Stays local to this fixture, never merged into `machines`:
-                # `repository-registry` hardcodes a fixture-delta assertion on
-                # `.nexus.repos` and would break if `machines` gained a second hypervisor.
+                # the real guests declare no `host`, which a second hypervisor
+                # would require, failing evaluation for the whole template.
                 secondHypervisor = {
                   platform = "x86_64-linux";
                   type = "hypervisor";
