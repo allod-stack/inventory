@@ -1054,7 +1054,6 @@
                 check "host_provided_repos member outside repos: pinned to its own diagnostic" true "${b (pinnedTo "hostProvidedNotInRepos" "privacy-1" machinesHostProvidedNotInRepos)}"
                 check "host_provided_repos member outside repos: fails mkVmSpecsJson"          true "${b (rejects machinesHostProvidedNotInRepos)}"
 
-                check "valid host_provided_repos: accepted by mkVmSpecsJson" true "${b (accepts machinesWithHostProvided)}"
                 check "valid host_provided_repos: first entry carries through to the generated spec" "allod/memory" "${builtins.elemAt specWithMarker."allod-dev".host_provided_repos 0}"
                 check "valid host_provided_repos: exactly one entry carries through" "1" "${toString (builtins.length specWithMarker."allod-dev".host_provided_repos)}"
                 check "host_provided_repos omitted from the generated spec when not declared" "false" "${b (specWithoutMarker."allod-dev" ? host_provided_repos)}"

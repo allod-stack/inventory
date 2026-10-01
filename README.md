@@ -85,9 +85,10 @@ generated hardware config.
 
 `lib.vmSpecsJson` maps every guest machine to only the fields host
 tooling needs — `memory_mb`, `vcpus`, `disk_gb`, `ip`, `mac`, `forge_key`,
-`repos`, `self_rebuild`, `runtime`, `data_disk` when declared, and `host` when
-declared — dropping `platform`, `type`, and `hardware`. `scripts/vm-specs.json`
-is the committed, key-sorted copy.
+`repos`, `self_rebuild`, `runtime`, `data_disk` when declared, `host` when
+declared, and `host_provided_repos` when declared — dropping `platform`,
+`type`, and `hardware`. `scripts/vm-specs.json` is the committed, key-sorted
+copy.
 Regenerate it after editing `machines`:
 
 ```
@@ -237,8 +238,9 @@ hypervisor to stay covered.
 
 ## Host-provided-repos assertions
 
-`host_provided_repos` is optional; a guest that omits it is unaffected. When
-present, evaluating the flake fails fast if:
+`host_provided_repos` is optional; when present it names `repos` aliases
+whose checkout the hypervisor supplies instead of the guest cloning them.
+Evaluating the flake fails fast if:
 
 - a hypervisor machine declares one at all — `inventory hypervisor machines
   must not declare host_provided_repos: <names>`
@@ -247,15 +249,7 @@ present, evaluating the flake fails fast if:
 - a member is not also present in the machine's own `repos` — `inventory
   machines with host_provided_repos not in repos: <names>`
 
-`scripts/vm-specs.json` carries `host_provided_repos` only for a machine that
-declares it, the same optional spelling as `data_disk` and `host`, so no
-public machine's generated spec changes. The guest bootstrap skip rule that
-reads this field is tracked separately (`allod/tools`#268), as is the host
-step that populates the checkout (`allod/nexus`#73). The
-`host-provided-repos-mutations` check runs this validation against sabotaged
-copies of `machines`, one fixture per rule, and against one fixture with a
-valid `host_provided_repos` to prove the field reaches the generated spec
-unchanged.
+`scripts/vm-specs.json` carries the key only for a machine that declares it.
 
 ## Consumers
 
