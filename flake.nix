@@ -169,6 +169,12 @@
           # own name, and must not also make the guest `hostNotHypervisor`.
           vmsHostKnown =
             lib.filterAttrs (_: m: builtins.hasAttr m.host typed) vmsHostIsString;
+
+          isStringList = v: builtins.isList v && lib.all builtins.isString v;
+
+          vmsWithHostProvided = lib.filterAttrs (_: m: m ? host_provided_repos) vms;
+          vmsHostProvidedIsStringList =
+            lib.filterAttrs (_: m: isStringList m.host_provided_repos) vmsWithHostProvided;
         in {
           missingType = lib.filterAttrs (_: m: !(m ? type)) ms;
           nonStringType =
@@ -227,6 +233,19 @@
             if lib.length (builtins.attrNames runtimeFree) > 1
             then lib.filterAttrs (_: m: !(m ? host)) vms
             else {};
+
+          hostProvidedOnHypervisor =
+            lib.filterAttrs (_: m: m ? host_provided_repos) runtimeFree;
+
+          hostProvidedNotStringList =
+            lib.filterAttrs (_: m: !(isStringList m.host_provided_repos)) vmsWithHostProvided;
+
+          # Guarded on vmsHostProvidedIsStringList: a malformed marker trips
+          # hostProvidedNotStringList alone, never also this diagnostic.
+          hostProvidedNotInRepos =
+            lib.filterAttrs
+              (_: m: !(lib.all (r: builtins.elem r m.repos) m.host_provided_repos))
+              vmsHostProvidedIsStringList;
         };
 
       # Parameterized on an explicit machine set, rather than closing over
@@ -296,19 +315,30 @@
             assert lib.assertMsg (diag.guestMissingHost == {})
               "inventory machines missing host (required once more than one hypervisor is declared): ${lib.concatStringsSep ", " (builtins.attrNames diag.guestMissingHost)}";
             true;
+
+          hostProvidedShape =
+            assert lib.assertMsg (diag.hostProvidedOnHypervisor == {})
+              "inventory ${lib.concatStringsSep " and " runtimeFreeTypes} machines must not declare host_provided_repos: ${lib.concatStringsSep ", " (builtins.attrNames diag.hostProvidedOnHypervisor)}";
+            assert lib.assertMsg (diag.hostProvidedNotStringList == {})
+              "inventory machines with non-string-list host_provided_repos: ${lib.concatStringsSep ", " (builtins.attrNames diag.hostProvidedNotStringList)}";
+            assert lib.assertMsg (diag.hostProvidedNotInRepos == {})
+              "inventory machines with host_provided_repos not in repos: ${lib.concatStringsSep ", " (builtins.attrNames diag.hostProvidedNotInRepos)}";
+            true;
         in
         # The order, stated once and enforced by forcing rather than by layout.
         builtins.seq machineShape
           (builtins.seq runtimeShape
             (builtins.seq dataDiskShape
               (builtins.seq hostShape
-                (lib.filterAttrs (_: m: !(isRuntimeFree m)) ms))));
+                (builtins.seq hostProvidedShape
+                  (lib.filterAttrs (_: m: !(isRuntimeFree m)) ms)))));
 
       mkVmSpecsJson = ms: builtins.toJSON (lib.mapAttrs (name: m: {
         inherit (m) memory_mb vcpus disk_gb ip mac forge_key repos runtime;
         self_rebuild = m.self_rebuild or true;
       } // lib.optionalAttrs (m ? data_disk) { inherit (m) data_disk; }
-        // lib.optionalAttrs (m ? host) { inherit (m) host; }) (mkVmSpecs ms));
+        // lib.optionalAttrs (m ? host) { inherit (m) host; }
+        // lib.optionalAttrs (m ? host_provided_repos) { inherit (m) host_provided_repos; }) (mkVmSpecs ms));
 
       # Forces the machine validation chain even when a consumer reads the
       # raw `machines`/`lib.machines` surface instead of `lib.vmSpecsJson`.
@@ -978,6 +1008,63 @@
                 fi
 
                 echo "host-fact-mutations passed: valid data has no diagnostics, each sabotaged fixture is pinned to exactly the diagnostic it targets and fails the real mkVmSpecsJson path, host is required only once a second hypervisor exists, and a valid host survives into the generated spec"
+                touch "$out"
+              ''
+            );
+
+          host-provided-repos-mutations = pkgs.runCommand "host-provided-repos-mutations-check"
+            { nativeBuildInputs = [ pkgs.jq ]; }
+            (
+              let
+                machinesHostProvidedOnHypervisor = machines // {
+                  nexus = machines.nexus // { host_provided_repos = [ "allod/nexus" ]; };
+                };
+
+                machinesHostProvidedNotStringList = machines // {
+                  "privacy-1" = machines."privacy-1" // { host_provided_repos = "allod/memory"; };
+                };
+
+                machinesHostProvidedNotInRepos = machines // {
+                  "privacy-1" = machines."privacy-1" // { host_provided_repos = [ "allod/memory" ]; };
+                };
+
+                machinesWithHostProvided = machines // {
+                  "allod-dev" = machines."allod-dev" // { host_provided_repos = [ "allod/memory" ]; };
+                };
+
+                validDiag = machineDiagnostics machines;
+                validHasNoDiagnostics = lib.all (f: validDiag.${f} == {}) diagnosticFields;
+
+                b = boolLiteral;
+
+                specWithoutMarker = builtins.fromJSON (mkVmSpecsJson machines);
+                specWithMarker = builtins.fromJSON (mkVmSpecsJson machinesWithHostProvided);
+              in
+              ''
+                ${checkPrelude}
+
+                check "valid machines have no diagnostics" true "${b validHasNoDiagnostics}"
+
+                check "hypervisor with host_provided_repos: pinned to its own diagnostic" true "${b (pinnedTo "hostProvidedOnHypervisor" "nexus" machinesHostProvidedOnHypervisor)}"
+                check "hypervisor with host_provided_repos: fails mkVmSpecsJson"          true "${b (rejects machinesHostProvidedOnHypervisor)}"
+
+                check "non-string-list host_provided_repos: pinned to its own diagnostic" true "${b (pinnedTo "hostProvidedNotStringList" "privacy-1" machinesHostProvidedNotStringList)}"
+                check "non-string-list host_provided_repos: fails mkVmSpecsJson"          true "${b (rejects machinesHostProvidedNotStringList)}"
+
+                check "host_provided_repos member outside repos: pinned to its own diagnostic" true "${b (pinnedTo "hostProvidedNotInRepos" "privacy-1" machinesHostProvidedNotInRepos)}"
+                check "host_provided_repos member outside repos: fails mkVmSpecsJson"          true "${b (rejects machinesHostProvidedNotInRepos)}"
+
+                check "valid host_provided_repos: accepted by mkVmSpecsJson" true "${b (accepts machinesWithHostProvided)}"
+                check "valid host_provided_repos: first entry carries through to the generated spec" "allod/memory" "${builtins.elemAt specWithMarker."allod-dev".host_provided_repos 0}"
+                check "valid host_provided_repos: exactly one entry carries through" "1" "${toString (builtins.length specWithMarker."allod-dev".host_provided_repos)}"
+                check "host_provided_repos omitted from the generated spec when not declared" "false" "${b (specWithoutMarker."allod-dev" ? host_provided_repos)}"
+
+                if [ "$errors" -gt 0 ]; then
+                  echo "host-provided-repos-mutations failed with $errors error(s)"
+                  exit 1
+                fi
+
+                echo "host-provided-repos-mutations passed: valid data has no diagnostics, each sabotaged fixture is pinned to exactly the diagnostic it targets and fails the real mkVmSpecsJson path, and a valid host_provided_repos survives into the generated spec"
                 touch "$out"
               ''
             );

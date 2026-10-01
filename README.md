@@ -39,6 +39,7 @@ This repo does **not** own:
 | `checks.<system>.runtime-fact-mutations` | derivation | proves a missing, non-string, or unknown `runtime` fails evaluation, that a hypervisor cannot declare one, that hypervisors stay excluded, that both public runtime examples are present, and that JSON drift is detected |
 | `checks.<system>.data-disk-fact-mutations` | derivation | proves a malformed optional `data_disk` fails evaluation, that a hypervisor cannot declare one, and that a valid `data_disk` survives into the generated spec |
 | `checks.<system>.host-fact-mutations` | derivation | proves a malformed optional `host` fails evaluation, that a hypervisor cannot declare one, that a guest is required to declare one once a second hypervisor exists, and that a valid `host` survives into the generated spec |
+| `checks.<system>.host-provided-repos-mutations` | derivation | proves a malformed optional `host_provided_repos` fails evaluation, that a hypervisor cannot declare one, and that a valid `host_provided_repos` survives into the generated spec |
 
 The flake's only input is `nixpkgs` (nixos-25.11). `checks` is generated per
 entry in `lib.supportedPlatforms` (currently `x86_64-linux` only).
@@ -70,6 +71,7 @@ Each entry in `machines` is an attrset:
 | `repos` | list of string | repo-registry aliases to check out on the machine |
 | `data_disk` | attrset | optional; a second disk that outlives reprovisioning. `{ path, size_gb }`: `path` absolute, no whitespace, `..`, comma, or trailing slash; `size_gb` optional, a positive integer, used only to create an image file that does not exist yet. Forbidden on a hypervisor |
 | `host` | string | optional; the name of the hypervisor machine that runs this guest. Must name a known machine of type `hypervisor`. Forbidden on a hypervisor. Required on every guest once more than one hypervisor is declared |
+| `host_provided_repos` | list of string | optional; `repos` aliases whose checkout the hypervisor supplies instead of the guest cloning them. Every member must also appear in `repos`. Forbidden on a hypervisor |
 | `hardware` | NixOS module | hypervisor-only; imported by `profiles` for the host toplevel |
 
 Example machines shipped in the template: `allod-dev` (`dev`,
@@ -232,6 +234,28 @@ copies of `machines`, one fixture per rule; its two-hypervisor fixtures add a
 second synthetic hypervisor to a local copy of the machine set only, never to
 `machines` itself, so `scripts/vm-specs.json` never needs a second real
 hypervisor to stay covered.
+
+## Host-provided-repos assertions
+
+`host_provided_repos` is optional; a guest that omits it is unaffected. When
+present, evaluating the flake fails fast if:
+
+- a hypervisor machine declares one at all — `inventory hypervisor machines
+  must not declare host_provided_repos: <names>`
+- it is not a list of strings — `inventory machines with non-string-list
+  host_provided_repos: <names>`
+- a member is not also present in the machine's own `repos` — `inventory
+  machines with host_provided_repos not in repos: <names>`
+
+`scripts/vm-specs.json` carries `host_provided_repos` only for a machine that
+declares it, the same optional spelling as `data_disk` and `host`, so no
+public machine's generated spec changes. The guest bootstrap skip rule that
+reads this field is tracked separately (`allod/tools`#268), as is the host
+step that populates the checkout (`allod/nexus`#73). The
+`host-provided-repos-mutations` check runs this validation against sabotaged
+copies of `machines`, one fixture per rule, and against one fixture with a
+valid `host_provided_repos` to prove the field reaches the generated spec
+unchanged.
 
 ## Consumers
 
