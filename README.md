@@ -78,8 +78,9 @@ Example machines shipped in the template: `allod-dev` (`dev`,
 `runtime = "libvirt"`), `privacy-1` (`privacy`, `runtime = "libvirt"`), and
 `nexus` (`hypervisor`, no `runtime`). The `nexus` entry is present because
 `profiles` always injects a `nexus` identity and asserts a matching machine;
-its `hardware` attr is illustrative and meant to be replaced with a real
-generated hardware config.
+its `hardware` attr points at `hosts/nexus/hardware.nix`, a synthetic module a
+deployment replaces with the machine's own generated `hardware-configuration.nix`;
+the file is the whole of what a fork changes for the hypervisor's hardware.
 
 ## Derived VM specs
 

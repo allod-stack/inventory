@@ -46,22 +46,10 @@
           forge_key = null;
           repos = [ "allod/nexus" "allod/inventory" "allod/secrets" "allod/profiles" ];
 
-          # Illustrative synthetic hardware. `profiles` imports this as a NixOS
-          # module for the hypervisor toplevel; `nexus.nixosModules.host`
-          # provides systemd-boot, so this supplies only the root and EFI
-          # filesystems. Replace with your machine's generated hardware config.
-          hardware = { ... }: {
-            boot.initrd.availableKernelModules = [ "nvme" "xhci_pci" "ahci" "usb_storage" ];
-            boot.kernelModules = [ "kvm-intel" ];
-            fileSystems."/" = {
-              device = "/dev/disk/by-label/nixos";
-              fsType = "ext4";
-            };
-            fileSystems."/boot" = {
-              device = "/dev/disk/by-label/boot";
-              fsType = "vfat";
-            };
-          };
+          # The hypervisor's hardware module, a file so a deployment replaces
+          # it with its own generated hardware-configuration.nix without
+          # editing this flake.
+          hardware = ./hosts/nexus/hardware.nix;
         };
 
         privacy-1 = {
@@ -1037,7 +1025,12 @@
 
                 b = boolLiteral;
 
-                specWithoutMarker = builtins.fromJSON (mkVmSpecsJson machines);
+                # The negative fixture strips the field rather than trusting the real
+                # data to lack it: a deployment may declare host_provided_repos.
+                machinesWithoutHostProvided = machines // {
+                  "allod-dev" = builtins.removeAttrs machines."allod-dev" [ "host_provided_repos" ];
+                };
+                specWithoutMarker = builtins.fromJSON (mkVmSpecsJson machinesWithoutHostProvided);
                 specWithMarker = builtins.fromJSON (mkVmSpecsJson machinesWithHostProvided);
               in
               ''
