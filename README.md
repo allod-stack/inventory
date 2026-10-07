@@ -79,12 +79,13 @@ A `service` machine is a guest like `dev` or `privacy` — it declares `runtime`
 and the usual sizing and networking fields — but is a stateful network service
 rather than a workstation, so it must declare `data_disk` (all of its state
 lives there), `forge_key = null`, and `repos = [ ]`; see Service assertions
-below. No `service` machine ships in the template; the first is `forge`, added
-under allod/strategy#65.
+below. `forge` is the template's first: machine facts only, until its
+profile, identity, and builder seam land under allod/strategy#65.
 
 Example machines shipped in the template: `allod-dev` (`dev`,
-`runtime = "libvirt"`), `privacy-1` (`privacy`, `runtime = "libvirt"`), and
-`nexus` (`hypervisor`, no `runtime`). The `nexus` entry is present because
+`runtime = "libvirt"`), `privacy-1` (`privacy`, `runtime = "libvirt"`),
+`forge` (`service`, `runtime = "libvirt"`), and `nexus` (`hypervisor`, no
+`runtime`). The `nexus` entry is present because
 `profiles` always injects a `nexus` identity and asserts a matching machine;
 its `hardware` attr points at `hosts/nexus/hardware.nix`, a synthetic module a
 deployment replaces with the machine's own generated `hardware-configuration.nix`;

@@ -65,6 +65,24 @@
           self_rebuild = false;
           repos = [];
         };
+
+        forge = {
+          platform = "x86_64-linux";
+          type = "service";
+          runtime = "libvirt";
+          memory_mb = 2048;
+          vcpus = 2;
+          disk_gb = 20;
+          ip = "192.0.2.12";
+          mac = "52:54:00:00:00:12";
+          forge_key = null;
+          self_rebuild = false;
+          repos = [];
+          data_disk = {
+            path = "/var/lib/allod/forge-data.img";
+            size_gb = 20;
+          };
+        };
       };
 
       # Platform validation reads its diagnostics from the same parameterized
@@ -939,6 +957,7 @@
                 machinesTwoHypervisorsWithHosts = machinesTwoHypervisors // {
                   "allod-dev" = machinesTwoHypervisors."allod-dev" // { host = "nexus"; };
                   "privacy-1" = machinesTwoHypervisors."privacy-1" // { host = "fixture-hv"; };
+                  forge = machinesTwoHypervisors.forge // { host = "nexus"; };
                 };
 
                 machinesHostOnHypervisor = machines // {
@@ -965,8 +984,11 @@
                   "allod-dev" = machines."allod-dev" // { host = "nexus"; };
                 };
 
+                # Every guest but privacy-1 gets a host, or the diagnostic
+                # names more than the machine this fixture targets.
                 machinesGuestMissingHost = machinesTwoHypervisors // {
                   "allod-dev" = machinesTwoHypervisors."allod-dev" // { host = "nexus"; };
+                  forge = machinesTwoHypervisors.forge // { host = "nexus"; };
                 };
 
                 validDiag = machineDiagnostics machines;
@@ -1082,8 +1104,8 @@
               ''
             );
 
-          # No template machine is a service VM, so the rules are exercised
-          # against a fixture (testing.md, "Do not name a real machine").
+          # Sabotage needs its own machine, never forge (testing.md, "Do not
+          # name a real machine in a fixture").
           service-fact-mutations = pkgs.runCommand "service-fact-mutations-check"
             { nativeBuildInputs = [ pkgs.jq ]; }
             (
@@ -1095,8 +1117,8 @@
                   memory_mb = 2048;
                   vcpus = 2;
                   disk_gb = 20;
-                  ip = "192.0.2.12";
-                  mac = "52:54:00:00:00:12";
+                  ip = "192.0.2.99";
+                  mac = "52:54:00:00:00:99";
                   forge_key = null;
                   self_rebuild = false;
                   repos = [];

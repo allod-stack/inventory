@@ -21,6 +21,21 @@
     "self_rebuild": false,
     "vcpus": 4
   },
+  "forge": {
+    "data_disk": {
+      "path": "/var/lib/allod/forge-data.img",
+      "size_gb": 20
+    },
+    "disk_gb": 20,
+    "forge_key": null,
+    "ip": "192.0.2.12",
+    "mac": "52:54:00:00:00:12",
+    "memory_mb": 2048,
+    "repos": [],
+    "runtime": "libvirt",
+    "self_rebuild": false,
+    "vcpus": 2
+  },
   "privacy-1": {
     "disk_gb": 20,
     "forge_key": null,
