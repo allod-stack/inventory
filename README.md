@@ -40,6 +40,7 @@ This repo does **not** own:
 | `checks.<system>.data-disk-fact-mutations` | derivation | proves a malformed optional `data_disk` fails evaluation, that a hypervisor cannot declare one, and that a valid `data_disk` survives into the generated spec |
 | `checks.<system>.host-fact-mutations` | derivation | proves a malformed optional `host` fails evaluation, that a hypervisor cannot declare one, that a guest is required to declare one once a second hypervisor exists, and that a valid `host` survives into the generated spec |
 | `checks.<system>.host-provided-repos-mutations` | derivation | proves a malformed optional `host_provided_repos` fails evaluation, that a hypervisor cannot declare one, and that a valid `host_provided_repos` survives into the generated spec |
+| `checks.<system>.service-fact-mutations` | derivation | proves a `service` machine without `data_disk`, with a non-null `forge_key`, or with non-empty `repos` each fails evaluation with its own diagnostic, and that a valid service machine survives into the generated spec with its `data_disk` |
 
 The flake's only input is `nixpkgs` (nixos-25.11). `checks` is generated per
 entry in `lib.supportedPlatforms` (currently `x86_64-linux` only).
@@ -59,7 +60,7 @@ Each entry in `machines` is an attrset:
 | Field | Type | Notes |
 |---|---|---|
 | `platform` | string | Nix system, e.g. `x86_64-linux`; required — asserted present and valid |
-| `type` | string | `dev`, `privacy`, or `hypervisor` |
+| `type` | string | `dev`, `privacy`, `hypervisor`, or `service` |
 | `runtime` | string | `libvirt`, the one guest runtime; required for non-hypervisor machines — asserted present, a string, and a known value; hypervisor machines carry no `runtime`, and declaring one is an error |
 | `memory_mb` | int | RAM |
 | `vcpus` | int | vCPU count |
@@ -73,6 +74,13 @@ Each entry in `machines` is an attrset:
 | `host` | string | optional; the name of the hypervisor machine that runs this guest. Must name a known machine of type `hypervisor`. Forbidden on a hypervisor. Required on every guest once more than one hypervisor is declared |
 | `host_provided_repos` | list of string | optional; `repos` aliases whose checkout the hypervisor supplies instead of the guest cloning them. Every member must also appear in `repos`. Forbidden on a hypervisor |
 | `hardware` | NixOS module | hypervisor-only; imported by `profiles` for the host toplevel |
+
+A `service` machine is a guest like `dev` or `privacy` — it declares `runtime`
+and the usual sizing and networking fields — but is a stateful network service
+rather than a workstation, so it must declare `data_disk` (all of its state
+lives there), `forge_key = null`, and `repos = [ ]`; see Service assertions
+below. No `service` machine ships in the template; the first is `forge`, added
+under allod/strategy#65.
 
 Example machines shipped in the template: `allod-dev` (`dev`,
 `runtime = "libvirt"`), `privacy-1` (`privacy`, `runtime = "libvirt"`), and
@@ -251,6 +259,27 @@ Evaluating the flake fails fast if:
   machines with host_provided_repos not in repos: <names>`
 
 `scripts/vm-specs.json` carries the key only for a machine that declares it.
+
+## Service assertions
+
+A `service` machine is a guest of this fleet (`runtime` required, sized and
+networked exactly like `dev`/`privacy`) that runs one network service and
+keeps its state across reprovisioning. Evaluating the flake fails fast if a
+`service` machine:
+
+- declares no `data_disk` — `inventory service machines require data_disk,
+  the disk their state lives on: <names>`. The guest mounts all of
+  `/var/lib` on it, so a service machine without one would lose everything on
+  `provision-vm --replace`.
+- declares a non-null `forge_key` — `inventory service machines must declare
+  forge_key = null, holding no forge credential: <names>`.
+- declares a non-empty `repos` — `inventory service machines must declare
+  repos = [ ], checking nothing out: <names>`. What a service machine serves
+  arrives through its profile, not a forge clone.
+
+The `service-fact-mutations` check runs this validation against a fixture
+service machine, one sabotage per rule, and against a fixture with a valid
+`data_disk` to prove the field reaches the generated spec unchanged.
 
 ## Consumers
 

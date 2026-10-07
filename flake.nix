@@ -91,8 +91,9 @@
       # what the diagnostic message reads from, so adding a member later needs
       # no other edit. That attempt was reverted: a rented host has none of this
       # registry's facts, so it is a `nixosConfigurations` entry composed from
-      # the exported modules rather than a machine described here. See
-      # allod/archetypes#60.
+      # the exported modules rather than a machine described here
+      # (allod/archetypes#60). Today's `service` type is unrelated to that
+      # attempt: it is a guest, so it does not belong in this list.
       runtimeFreeTypes = [ "hypervisor" ];
 
       isRuntimeFree = m: builtins.elem m.type runtimeFreeTypes;
@@ -163,6 +164,8 @@
           vmsWithHostProvided = lib.filterAttrs (_: m: m ? host_provided_repos) vms;
           vmsHostProvidedIsStringList =
             lib.filterAttrs (_: m: isStringList m.host_provided_repos) vmsWithHostProvided;
+
+          vmsService = lib.filterAttrs (_: m: m.type == "service") vms;
         in {
           missingType = lib.filterAttrs (_: m: !(m ? type)) ms;
           nonStringType =
@@ -234,6 +237,14 @@
             lib.filterAttrs
               (_: m: !(lib.all (r: builtins.elem r m.repos) m.host_provided_repos))
               vmsHostProvidedIsStringList;
+
+          serviceMissingDataDisk = lib.filterAttrs (_: m: !(m ? data_disk)) vmsService;
+
+          serviceWithForgeKey =
+            lib.filterAttrs (_: m: (m ? forge_key) && m.forge_key != null) vmsService;
+
+          serviceWithRepos =
+            lib.filterAttrs (_: m: (m ? repos) && m.repos != []) vmsService;
         };
 
       # Parameterized on an explicit machine set, rather than closing over
@@ -312,6 +323,15 @@
             assert lib.assertMsg (diag.hostProvidedNotInRepos == {})
               "inventory machines with host_provided_repos not in repos: ${lib.concatStringsSep ", " (builtins.attrNames diag.hostProvidedNotInRepos)}";
             true;
+
+          serviceShape =
+            assert lib.assertMsg (diag.serviceMissingDataDisk == {})
+              "inventory service machines require data_disk, the disk their state lives on: ${lib.concatStringsSep ", " (builtins.attrNames diag.serviceMissingDataDisk)}";
+            assert lib.assertMsg (diag.serviceWithForgeKey == {})
+              "inventory service machines must declare forge_key = null, holding no forge credential: ${lib.concatStringsSep ", " (builtins.attrNames diag.serviceWithForgeKey)}";
+            assert lib.assertMsg (diag.serviceWithRepos == {})
+              "inventory service machines must declare repos = [ ], checking nothing out: ${lib.concatStringsSep ", " (builtins.attrNames diag.serviceWithRepos)}";
+            true;
         in
         # The order, stated once and enforced by forcing rather than by layout.
         builtins.seq machineShape
@@ -319,7 +339,8 @@
             (builtins.seq dataDiskShape
               (builtins.seq hostShape
                 (builtins.seq hostProvidedShape
-                  (lib.filterAttrs (_: m: !(isRuntimeFree m)) ms)))));
+                  (builtins.seq serviceShape
+                    (lib.filterAttrs (_: m: !(isRuntimeFree m)) ms))))));
 
       mkVmSpecsJson = ms: builtins.toJSON (lib.mapAttrs (name: m: {
         inherit (m) memory_mb vcpus disk_gb ip mac forge_key repos runtime;
@@ -1057,6 +1078,81 @@
                 fi
 
                 echo "host-provided-repos-mutations passed: valid data has no diagnostics, each sabotaged fixture is pinned to exactly the diagnostic it targets and fails the real mkVmSpecsJson path, and a valid host_provided_repos survives into the generated spec"
+                touch "$out"
+              ''
+            );
+
+          # No template machine is a service VM, so the rules are exercised
+          # against a fixture (testing.md, "Do not name a real machine").
+          service-fact-mutations = pkgs.runCommand "service-fact-mutations-check"
+            { nativeBuildInputs = [ pkgs.jq ]; }
+            (
+              let
+                serviceFixture = {
+                  platform = "x86_64-linux";
+                  type = "service";
+                  runtime = "libvirt";
+                  memory_mb = 2048;
+                  vcpus = 2;
+                  disk_gb = 20;
+                  ip = "192.0.2.12";
+                  mac = "52:54:00:00:00:12";
+                  forge_key = null;
+                  self_rebuild = false;
+                  repos = [];
+                  data_disk = {
+                    path = "/var/lib/allod/fixture-service-data.img";
+                    size_gb = 50;
+                  };
+                };
+
+                machinesServiceMissingDataDisk = machines // {
+                  "service-1" = builtins.removeAttrs serviceFixture [ "data_disk" ];
+                };
+
+                machinesServiceWithForgeKey = machines // {
+                  "service-1" = serviceFixture // { forge_key = "allod_vm"; };
+                };
+
+                machinesServiceWithRepos = machines // {
+                  "service-1" = serviceFixture // { repos = [ "allod/inventory" ]; };
+                };
+
+                machinesWithValidService = machines // {
+                  "service-1" = serviceFixture;
+                };
+
+                validDiag = machineDiagnostics machines;
+                validHasNoDiagnostics = lib.all (f: validDiag.${f} == {}) diagnosticFields;
+
+                b = boolLiteral;
+
+                validSpec = builtins.fromJSON (mkVmSpecsJson machinesWithValidService);
+              in
+              ''
+                ${checkPrelude}
+
+                check "valid machines have no diagnostics" true "${b validHasNoDiagnostics}"
+
+                check "service missing data_disk: pinned to its own diagnostic" true "${b (pinnedTo "serviceMissingDataDisk" "service-1" machinesServiceMissingDataDisk)}"
+                check "service missing data_disk: fails mkVmSpecsJson"          true "${b (rejects machinesServiceMissingDataDisk)}"
+
+                check "service with non-null forge_key: pinned to its own diagnostic" true "${b (pinnedTo "serviceWithForgeKey" "service-1" machinesServiceWithForgeKey)}"
+                check "service with non-null forge_key: fails mkVmSpecsJson"          true "${b (rejects machinesServiceWithForgeKey)}"
+
+                check "service with non-empty repos: pinned to its own diagnostic" true "${b (pinnedTo "serviceWithRepos" "service-1" machinesServiceWithRepos)}"
+                check "service with non-empty repos: fails mkVmSpecsJson"          true "${b (rejects machinesServiceWithRepos)}"
+
+                check "valid service machine: accepted by mkVmSpecsJson" true "${b (accepts machinesWithValidService)}"
+                check "valid service machine: data_disk path carries through to the generated spec" "/var/lib/allod/fixture-service-data.img" "${validSpec."service-1".data_disk.path}"
+                check "valid service machine: data_disk size_gb carries through to the generated spec" "50" "${toString validSpec."service-1".data_disk.size_gb}"
+
+                if [ "$errors" -gt 0 ]; then
+                  echo "service-fact-mutations failed with $errors error(s)"
+                  exit 1
+                fi
+
+                echo "service-fact-mutations passed: valid data has no diagnostics, each sabotaged fixture is pinned to exactly the diagnostic it targets and fails the real mkVmSpecsJson path, and a valid service machine survives into the generated spec with its data_disk"
                 touch "$out"
               ''
             );
