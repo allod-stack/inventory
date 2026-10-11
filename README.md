@@ -84,7 +84,8 @@ profile, identity, and builder seam land under allod/strategy#65.
 
 Example machines shipped in the template: `allod-dev` (`dev`,
 `runtime = "libvirt"`), `privacy-1` (`privacy`, `runtime = "libvirt"`),
-`forge` (`service`, `runtime = "libvirt"`), and `nexus` (`hypervisor`, no
+`forge` (`service`, `runtime = "libvirt"`), `bitcoin-node` (`privacy`,
+`runtime = "libvirt"`, with a `data_disk`), and `nexus` (`hypervisor`, no
 `runtime`). The `nexus` entry is present because
 `profiles` always injects a `nexus` identity and asserts a matching machine;
 its `hardware` attr points at `hosts/nexus/hardware.nix`, a synthetic module a

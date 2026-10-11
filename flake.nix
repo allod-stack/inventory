@@ -83,6 +83,25 @@
             size_gb = 20;
           };
         };
+
+        # The pruned Bitcoin Core node; the data disk holds its chain.
+        bitcoin-node = {
+          platform = "x86_64-linux";
+          type = "privacy";
+          runtime = "libvirt";
+          memory_mb = 8192;
+          vcpus = 4;
+          disk_gb = 20;
+          ip = "192.0.2.13";
+          mac = "52:54:00:00:00:13";
+          forge_key = null;
+          self_rebuild = false;
+          repos = [];
+          data_disk = {
+            path = "/var/lib/allod/bitcoin-node-data.img";
+            size_gb = 40;
+          };
+        };
       };
 
       # Platform validation reads its diagnostics from the same parameterized
@@ -958,6 +977,7 @@
                   "allod-dev" = machinesTwoHypervisors."allod-dev" // { host = "nexus"; };
                   "privacy-1" = machinesTwoHypervisors."privacy-1" // { host = "fixture-hv"; };
                   forge = machinesTwoHypervisors.forge // { host = "nexus"; };
+                  "bitcoin-node" = machinesTwoHypervisors."bitcoin-node" // { host = "nexus"; };
                 };
 
                 machinesHostOnHypervisor = machines // {
@@ -989,6 +1009,7 @@
                 machinesGuestMissingHost = machinesTwoHypervisors // {
                   "allod-dev" = machinesTwoHypervisors."allod-dev" // { host = "nexus"; };
                   forge = machinesTwoHypervisors.forge // { host = "nexus"; };
+                  "bitcoin-node" = machinesTwoHypervisors."bitcoin-node" // { host = "nexus"; };
                 };
 
                 validDiag = machineDiagnostics machines;
